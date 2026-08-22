@@ -1,0 +1,38 @@
+{
+  "name": "mercury",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mercury - the merchant side of agentic commerce. A gate, and a witness.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --force",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "tsx scripts/verify-chain.ts",
+    "seed": "tsx scripts/seed.ts",
+    "demo": "tsx scripts/demo.ts",
+    "guard": "tsx scripts/guard.ts",
+    "clean": "rimraf packages/*/dist apps/*/dist **/*.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "fast-check": "^3.23.2",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "zod": "^3.24.1",
+    "@mercury/core": "*",
+    "@mercury/sakshi": "*"
+  }
+}

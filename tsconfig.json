@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/sakshi" },
+    { "path": "./packages/dwaar" },
+    { "path": "./packages/rail" },
+    { "path": "./packages/agent" }
+  ]
+}
