@@ -21,6 +21,9 @@
     },
     {
       "path": "./packages/agent"
+    },
+    {
+      "path": "./apps/mcp"
     }
   ]
 }

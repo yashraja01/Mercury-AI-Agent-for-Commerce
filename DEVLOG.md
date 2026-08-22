@@ -24,7 +24,7 @@
 | M3.5 | `store` + `Engine` | ☑ done | SQLite working state, orchestration, `BEGIN IMMEDIATE` locking |
 | M4 | `agent` + two personas | ☑ done | negotiator port, shared strict tools, seed + demo |
 | M5 | Mission Control UI | ☑ done | Negotiation Theatre, Dwaar panel, Sakshi explorer, SSE, freeze |
-| M6 | MCP server + Agent Card + feed | ☐ todo | external Claude buys end-to-end |
+| M6 | MCP server + Agent Card + feed | ☑ done | external Claude buys end-to-end; `npm run mcp:smoke` |
 | M7 | Chaos Console -- verify F1--F7 | ☐ todo | all failure-audit rows green |
 | M8 | Hardening | ☐ todo | LiveRail on test keys, Route (B2B), feed conformance, deploy, video |
 
@@ -49,6 +49,8 @@ Blocked: —
 | D13 | 2026-08-22 | `agent` behind a **negotiator port**, with `ScriptedRevenueAgent` as the default and `LlmRevenueAgent` alongside it | Same argument as D10, one layer up. The whole suite and every failure scenario must run with no API key, no network and no spend, or they stop being run. The scripted agent is not a mock of the system — it calls the same tool implementations and submits through the same gate; only the judgement is substituted | LLM-in-the-test-loop (non-deterministic, costs money, fails offline); mocking the Anthropic client (asserts our mock, not our gate) |
 | D14 | 2026-08-23 | Seed data moved into a `@mercury/seed` workspace package | Both the CLI seed script and the web app's reset need it, and a bundler cannot reliably reach loose `.ts` files outside the app directory. It also gives M6's MCP server the same fixtures | Keeping `db/seed/*.ts` and importing across the app boundary (fragile resolution); duplicating the fixtures (two sources of truth) |
 | D15 | 2026-08-23 | Tailwind v4 with hand-built components, not shadcn/ui | Mission Control is about eight distinct elements. shadcn adds a generator, a `components/ui` tree and Radix for controls we do not need, and its defaults are exactly the look the UI should not have. CONTEXT updated | shadcn/ui (as originally planned in the stack table) |
+| D16 | 2026-08-23 | The MCP server is a **thin HTTP client of the gateway**, not a second copy of the engine | Keeps D5's single execution point literally true: one store, one ledger, one rail instance. A purchase made from Claude Desktop therefore appears live in Mission Control, and there is exactly one place where money moves | Giving the MCP process its own Store/Engine (two rails, two in-memory order sets, a demo that silently diverges from what the browser shows) |
+| D17 | 2026-08-23 | No buyer-facing surface accepts a price -- no total, no unit price, no discount | An MCP tool taking `total_paise` from its caller puts an LLM back in the money path, which is the exact anti-pattern the architecture exists to prevent. The buyer sends a sentence; the merchant's agent proposes; Dwaar prices | A conventional `create_cart(items, total)` tool shape (familiar, and quietly fatal) |
 
 ## Failure-recovery audit
 
@@ -67,6 +69,40 @@ Blocked: —
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+
+### 2026-08-23 — M6 MCP server, Agent Card, product feed
+- `apps/mcp`: six stdio tools — `list_merchants`, `search_catalog`,
+  `check_budget`, `request_quote`, `pay`, `read_audit_trail`.
+- D16: the MCP server is a thin HTTP client of the gateway, so an external
+  Claude's purchase shows up live in Mission Control.
+- D17: **no buyer-facing surface accepts a price.** Stated in the Agent Card's
+  own `constraints`, enforced by there being no such argument anywhere.
+- `/.well-known/agent.json`: A2A Agent Card, including an honest `constraints`
+  block — what this merchant will refuse, published up front.
+- `/api/feed/{merchant_id}`: UCP/ACP-shaped feed. Integer paise with an explicit
+  currency and minor unit; availability from real stock. Landed cost and the
+  margin floor are absent, because a feed is public.
+- `/api/agent/{quote,pay,mandate,audit}`: the transaction API behind the tools.
+- `npm run mcp:smoke` drives the whole thing over real stdio JSON-RPC:
+  discovery -> budget -> negotiate -> pay -> replay refused -> audit verified.
+
+Three bugs the MCP path exposed that the UI never could, because Mission
+Control's scenarios pass explicit carts while a buyer sends a sentence:
+- `inferCart` matched SKUs on packaging words — "a pack of tea" returned tea,
+  biscuits *and* soap, because "pack" is in all three titles. Now filtered
+  through a not-a-product list, matched on word boundaries, most specific first.
+- It only read digits, so "eight bags of rice" quantified as one. Written
+  numbers now count, and the quantity scan steps over the item's own title words
+  while stopping dead at another product's, so "two bags of rice and eight packs
+  of tea" no longer gives the rice eight.
+- `pay` minted a fresh session id, orphaning the capture from the negotiation
+  that caused it. The session now threads through, so a buyer reads back
+  `OFFER_PROPOSED -> DWAAR_DECISION -> ORDER_CREATED -> PAYMENT_CAPTURED ->
+  REPLAY_BLOCKED` as one trace.
+
+- Note: `npm run seed` while the gateway is running has no visible effect — the
+  server holds its own open handle. Use the UI's Reset, or restart the server.
+- 137 tests green, build clean, chain verifies.
 
 ### 2026-08-23 — M5 Mission Control
 - `apps/web`: Next.js 15 App Router, Tailwind v4, one page and six routes.

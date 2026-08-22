@@ -126,7 +126,8 @@ type MerchantProfile = {
 | `store` | Mutable working state: catalogue, mandates, tokens, orders | Touch the Sakshi chain |
 | `seed` | Catalogue + mandate fixtures for both verticals | Contain logic of any kind |
 | `agent` | LLM negotiation, tool schemas, prompts, the Engine | Compute a final price or touch a key |
-| `web` | Mission Control: theatre, gate panel, ledger explorer | Decide anything; it is a spectator |
+| `web` | Mission Control + the buyer-facing API, feed and Agent Card | Decide anything; it is a spectator |
+| `mcp` | Buyer transport over stdio | Accept a price, or hold state of its own |
 
 ## 8. The negotiator port
 
@@ -155,7 +156,26 @@ submit: (proposal: Proposal) => Promise<GateFeedback>
 
 No store, no ledger, no rail, no key. `gateVia(engine, ...)` supplies it.
 
-## 9. The rail port
+## 9. The buyer surface
+
+An external agent reaches the merchant through three things, in this order:
+
+| Surface | Path | Carries |
+|---|---|---|
+| A2A Agent Card | `/.well-known/agent.json` | Who this is, what it sells, how authority works, **what it will refuse** |
+| Product feed | `/api/feed/{merchant_id}` | UCP/ACP-shaped: stable SKUs, paise, live stock, MOQ |
+| Transaction API | `/api/agent/{quote,pay,mandate,audit}` | The negotiation itself |
+
+`apps/mcp` wraps that API as MCP stdio tools. It is a **thin client of the
+gateway**, not a second engine (D5, D16): one store, one ledger, one rail, so a
+purchase made from Claude Desktop appears live in Mission Control.
+
+**No buyer-facing surface accepts a price.** Not a total, not a unit price, not
+a discount. A buyer sends a sentence; the merchant's agent proposes; Dwaar
+prices. An MCP tool taking `total_paise` from its caller would put an LLM back
+in the money path, which is the thing this whole design exists to prevent.
+
+## 10. The rail port
 
 `rail` exposes one interface with two implementations, chosen by `RAIL_MODE`:
 
@@ -176,7 +196,7 @@ interface RazorpayPort {
 
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
-## 10. Mission Control
+## 11. Mission Control
 
 One page, three panels, all spectators on the same run. The UI decides nothing;
 `scripts/demo.ts` drives the identical path with the browser closed.
@@ -192,12 +212,12 @@ scripted/Claude agent switch, a freeze kill switch, and reset.
 
 Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
 
-## 11. Money rule
+## 12. Money rule
 
 All money is **integer paise**, branded type `Paise`. No floats anywhere. Zod
 rejects non-integers at every boundary. Razorpay amounts are paise by definition.
 
-## 12. Constraints
+## 13. Constraints
 
 - Razorpay **test mode only**. Test UPI: `success@razorpay` / `failure@razorpay`.
 - Webhook signature: `HMAC_SHA256(rawBody, webhookSecret)` -> `X-Razorpay-Signature`.
@@ -207,7 +227,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 - Order `receipt` <= 40 chars and unique. `notes` <= 15 pairs, <= 256 chars each.
 - Secrets live only in `.env` (git-ignored). `.env.example` is committed.
 
-## 13. Protocol alignment
+## 14. Protocol alignment
 
 | Ecosystem primitive | Our implementation |
 |---|---|
@@ -215,11 +235,11 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 | AP2 Intent / Cart / Payment Mandates | `ReserveMandate` (human-signed) -> `CartMandate` (Dwaar-signed) -> `intent_token` (single-use) |
 | AP2 Human-Present / Not-Present | Explicit field; above-threshold spend forces Human-Present step-up |
 | ACP Delegated Payment (single-use, capped, expiring) | `intent_token`: nonce'd, TTL'd, consumed in the same DB transaction as the order |
-| A2A Agent Card discovery | `/.well-known/agent.json` |
-| UCP / ACP capability + product feed | Machine-readable catalog endpoint |
+| A2A Agent Card discovery | `/.well-known/agent.json` (live) |
+| UCP / ACP capability + product feed | `/api/feed/{merchant_id}` (live) |
 | Instant revocation | Global freeze flag -> `CIRCUIT.FROZEN` |
 
-## 14. Glossary
+## 15. Glossary
 
 - **Dwaar** — the deterministic policy gate. Pure function, no I/O, no LLM.
 - **Sakshi** — the append-only, hash-chained audit ledger.

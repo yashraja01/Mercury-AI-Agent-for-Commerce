@@ -476,6 +476,40 @@ describe("cart inference", () => {
     h.store.close();
   });
 
+  it("reads written numbers, not just digits", () => {
+    const h = harness();
+    const ctx = h.ctx(QUICK, async () => ({ outcome: "DENY", rule_ids: [], messages: [] }));
+
+    expect(inferCart(ctx, "two bags of rice and a pack of tea")).toEqual([
+      { sku: "QC_RICE_5KG", qty: 2 },
+      { sku: "QC_TEA_250G", qty: 1 },
+    ]);
+    h.store.close();
+  });
+
+  it("does not match a SKU on its packaging word", () => {
+    const h = harness();
+    const ctx = h.ctx(QUICK, async () => ({ outcome: "DENY", rule_ids: [], messages: [] }));
+
+    // "pack" appears in several titles. A buyer asking for "a pack of tea"
+    // wants tea, and nothing else.
+    const cart = inferCart(ctx, "a pack of tea");
+    expect(cart).toEqual([{ sku: "QC_TEA_250G", qty: 1 }]);
+    h.store.close();
+  });
+
+  it("gives each line its own quantity", () => {
+    const h = harness();
+    const ctx = h.ctx(QUICK, async () => ({ outcome: "DENY", rule_ids: [], messages: [] }));
+
+    // The eight must not leak onto the rice.
+    expect(inferCart(ctx, "two bags of rice and eight packs of tea")).toEqual([
+      { sku: "QC_RICE_5KG", qty: 2 },
+      { sku: "QC_TEA_250G", qty: 8 },
+    ]);
+    h.store.close();
+  });
+
   it("never proposes a quantity below the SKU minimum order quantity", () => {
     const h = harness(BULK, BULK_ITEMS);
     const ctx = h.ctx(BULK, async () => ({ outcome: "DENY", rule_ids: [], messages: [] }));

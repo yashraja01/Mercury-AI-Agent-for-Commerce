@@ -43,7 +43,48 @@ export interface ScriptedOptions {
   reQuote?: boolean;
 }
 
-/** Infer a cart from free text: exact SKU mentions first, then title-word matches. */
+/**
+ * Words that appear in a product title but do not identify a product.
+ *
+ * Packaging and size nouns are the trap: "a pack of tea" matched three
+ * different SKUs before this list existed, because "pack" is in the title of
+ * the biscuits and the soap. A buyer naming a unit is describing how they want
+ * it, not what they want.
+ */
+const NOT_A_PRODUCT = new Set([
+  "pack", "packs", "bag", "bags", "bottle", "bottles", "tin", "tins", "sack",
+  "sacks", "carton", "cartons", "box", "boxes", "roll", "rolls", "each", "the",
+  "and", "for", "with", "pure", "whole", "filter", "count", "size", "large",
+  "small", "please", "some", "want", "need", "give", "order",
+]);
+
+const WORD_NUMBERS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, dozen: 12, fifteen: 15,
+  twenty: 20, thirty: 30, fifty: 50, hundred: 100,
+};
+
+/** The words in a title that actually name the thing. */
+function keywordsOf(title: string): string[] {
+  return title
+    .toLowerCase()
+    .split(/[^a-z]+/u)
+    .filter((w) => w.length >= 3 && !NOT_A_PRODUCT.has(w));
+}
+
+function wordIndex(text: string, word: string): number {
+  const m = new RegExp(`\\b${word}\\b`, "u").exec(text);
+  return m?.index ?? -1;
+}
+
+/**
+ * Infer a cart from free text.
+ *
+ * This is the seam where a sentence becomes a proposal, and it is deliberately
+ * conservative: it will under-read a request rather than invent a line. Whatever
+ * it produces is still only a *proposal* -- Dwaar reprices every line and checks
+ * every limit -- so a misread here costs a round of negotiation, never money.
+ */
 export function inferCart(
   ctx: NegotiatorContext,
   message: string,
@@ -52,29 +93,62 @@ export function inferCart(
   const wanted: { sku: string; qty: number }[] = [];
 
   for (const item of searchCatalog(ctx, {})) {
-    const bySku = text.includes(item.sku.toLowerCase());
-    const words = item.title
-      .toLowerCase()
-      .split(/[^a-z]+/u)
-      .filter((w) => w.length >= 4);
-    const byTitle = words.some((w) => text.includes(w));
-    if (!bySku && !byTitle) continue;
+    const skuAt = wordIndex(text, item.sku.toLowerCase());
 
-    // "10 sacks of rice" / "rice x 4" -- take the nearest number, else the MOQ.
-    const qty = nearestQty(text, words[0] ?? item.sku.toLowerCase()) ?? item.moq;
+    // Match on the most specific word first, so "rice 25kg" beats a bare "rice"
+    // when both SKUs could plausibly answer.
+    const keywords = keywordsOf(item.title).sort((a, b) => b.length - a.length);
+    let at = skuAt;
+    let matched = item.sku.toLowerCase();
+    if (at < 0) {
+      for (const w of keywords) {
+        const i = wordIndex(text, w);
+        if (i >= 0) {
+          at = i;
+          matched = w;
+          break;
+        }
+      }
+    }
+    if (at < 0) continue;
+
+    const qty = qtyNear(text, at, new Set([matched, ...keywords])) ?? item.moq;
     wanted.push({ sku: item.sku, qty: Math.max(qty, item.moq) });
   }
   return wanted;
 }
 
-function nearestQty(text: string, near: string): number | undefined {
-  const at = text.indexOf(near);
-  if (at < 0) return undefined;
-  const window = text.slice(Math.max(0, at - 24), at + near.length + 12);
-  const m = /(\d{1,4})/u.exec(window);
-  if (m?.[1] === undefined) return undefined;
-  const n = Number.parseInt(m[1], 10);
-  return Number.isSafeInteger(n) && n > 0 && n <= 5_000 ? n : undefined;
+/** Filler a quantity may sit behind without belonging to something else. */
+const SKIPPABLE = new Set(["of", "x", "i", "need", "want", "please", "me", "us"]);
+
+/**
+ * The quantity attached to a mention.
+ *
+ * Scans backwards from the product word, stepping over this item's own title
+ * words ("10 sacks of Sona Masoori rice" must reach the 10) and over filler,
+ * but stopping dead at a word belonging to a *different* product -- so in "two
+ * bags of rice and eight packs of tea" the rice does not get the eight.
+ */
+function qtyNear(text: string, at: number, own: ReadonlySet<string>): number | undefined {
+  const before = text.slice(Math.max(0, at - 40), at);
+  const tokens = before.split(/[^a-z0-9]+/u).filter((t) => t !== "");
+
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const t = tokens[i];
+    if (t === undefined) continue;
+
+    if (/^\d+$/u.test(t)) {
+      const n = Number.parseInt(t, 10);
+      return Number.isSafeInteger(n) && n > 0 && n <= 5_000 ? n : undefined;
+    }
+    const spelled = WORD_NUMBERS[t];
+    if (spelled !== undefined) return spelled;
+
+    if (own.has(t) || NOT_A_PRODUCT.has(t) || SKIPPABLE.has(t)) continue;
+    // A word that names something else. Its quantity is not ours.
+    break;
+  }
+  return undefined;
 }
 
 /**
@@ -217,7 +291,9 @@ export class ScriptedRevenueAgent implements Negotiator {
       return DECLINE[rule ?? "MARGIN.FLOOR_BREACH"] ?? DECLINE_DEFAULT;
     }
     const total = settled.feedback.computed_total_paise ?? settled.proposal.quoted_total_paise;
-    const items = settled.proposal.lines.map((l) => `${l.qty} x ${l.sku}`).join(", ");
+    const items = settled.proposal.lines
+      .map((l) => `${l.qty} x ${this.#ctx.catalog.get(l.sku)?.title ?? l.sku}`)
+      .join(", ");
     const stepUp = settled.feedback.outcome === "ALLOW_WITH_STEPUP";
     return (
       `${items} comes to ${formatINR(paise(total))}. ` +
