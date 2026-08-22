@@ -1,6 +1,27 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "./src", "outDir": "./dist" },
-  "include": ["src/**/*.ts"],
-  "references": [{ "path": "../core" }, { "path": "../dwaar" }, { "path": "../sakshi" }, { "path": "../rail" }]
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../dwaar"
+    },
+    {
+      "path": "../sakshi"
+    },
+    {
+      "path": "../rail"
+    },
+    {
+      "path": "../store"
+    }
+  ]
 }

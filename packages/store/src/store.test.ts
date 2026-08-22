@@ -1,0 +1,234 @@
+import { describe, expect, it } from "vitest";
+import { type CatalogItem, paise } from "@mercury/core";
+import { Store } from "./store.js";
+
+function item(over: Partial<CatalogItem> = {}): CatalogItem {
+  return {
+    sku: "SKU_LAST_ONE",
+    merchant_id: "mch_demo",
+    title: "The Last Unit",
+    category: "staples",
+    unit: "each",
+    list_paise: paise(10_000),
+    cost_paise: paise(6_000),
+    stock: 1,
+    moq: 1,
+    ...over,
+  };
+}
+
+function store(): Store {
+  return Store.open(":memory:");
+}
+
+describe("F3: inventory race", () => {
+  it("lets exactly one buyer take the last unit", () => {
+    const s = store();
+    s.putItem(item());
+
+    const a = s.reserveStock("SKU_LAST_ONE", 1);
+    const b = s.reserveStock("SKU_LAST_ONE", 1);
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(false);
+    if (b.ok) throw new Error("unreachable");
+    expect(b.reason).toBe("INSUFFICIENT");
+    expect(b.available).toBe(0);
+    s.close();
+  });
+
+  it("never lets stock go negative under repeated contention", () => {
+    const s = store();
+    s.putItem(item({ stock: 10 }));
+
+    let granted = 0;
+    for (let i = 0; i < 50; i++) {
+      if (s.reserveStock("SKU_LAST_ONE", 1).ok) granted += 1;
+    }
+
+    expect(granted).toBe(10);
+    expect(s.getItem("SKU_LAST_ONE")?.stock).toBe(0);
+    s.close();
+  });
+
+  it("rejects an over-large reservation without partially applying it", () => {
+    const s = store();
+    s.putItem(item({ stock: 3 }));
+    const r = s.reserveStock("SKU_LAST_ONE", 5);
+    expect(r.ok).toBe(false);
+    expect(s.getItem("SKU_LAST_ONE")?.stock).toBe(3); // untouched
+    s.close();
+  });
+
+  it("reports an unknown SKU distinctly from an out-of-stock one", () => {
+    const s = store();
+    const r = s.reserveStock("SKU_NOPE", 1);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("UNKNOWN_SKU");
+    s.close();
+  });
+
+  it("releases stock back on an auto-refund", () => {
+    const s = store();
+    s.putItem(item({ stock: 1 }));
+    s.reserveStock("SKU_LAST_ONE", 1);
+    expect(s.getItem("SKU_LAST_ONE")?.stock).toBe(0);
+    s.releaseStock("SKU_LAST_ONE", 1);
+    expect(s.getItem("SKU_LAST_ONE")?.stock).toBe(1);
+    s.close();
+  });
+});
+
+describe("F7: intent token replay", () => {
+  const token = {
+    token_id: "itk_1",
+    mandate_id: "mnd_1",
+    cart_hash: "a".repeat(64),
+    amount_paise: paise(55_000),
+    nonce: "n1",
+    issued_at: "2026-06-01T10:00:00.000Z",
+    expires_at: "2026-06-01T10:05:00.000Z",
+  };
+
+  it("spends a token exactly once", () => {
+    const s = store();
+    s.issueToken(token);
+
+    expect(s.spendToken("itk_1").ok).toBe(true);
+    const second = s.spendToken("itk_1");
+    expect(second.ok).toBe(false);
+    if (second.ok) throw new Error("unreachable");
+    expect(second.reason).toBe("ALREADY_SPENT");
+    s.close();
+  });
+
+  it("rejects a token that was never issued", () => {
+    const s = store();
+    const r = s.spendToken("itk_ghost");
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("UNKNOWN");
+    s.close();
+  });
+
+  it("reports spent ids so Dwaar can deny a replay before any rail call", () => {
+    const s = store();
+    s.issueToken(token);
+    expect(s.spentTokenIds().has("itk_1")).toBe(false);
+    s.spendToken("itk_1");
+    expect(s.spentTokenIds().has("itk_1")).toBe(true);
+    s.close();
+  });
+});
+
+describe("envelope drawdown -- the Reserve Pay model", () => {
+  const signed = {
+    mandate: {
+      mandate_id: "mnd_1",
+      principal_id: "prn_alice",
+      agent_id: "agt_1",
+      vertical: "quick_commerce" as const,
+      reserved_paise: paise(200_000),
+      max_per_txn_paise: paise(100_000),
+      max_txn_count: 5,
+      requires_human_approval_above_paise: paise(150_000),
+      scope: { merchant_allowlist: ["mch_demo"], category_allowlist: ["staples"] },
+      human_present: false,
+      not_before: "2026-01-01T00:00:00.000Z",
+      expires_at: "2026-12-31T00:00:00.000Z",
+      nonce: "n",
+    },
+    signature: "sig",
+    public_key: "pk",
+  };
+
+  it("draws down and counts debits", () => {
+    const s = store();
+    s.putMandate(signed);
+    expect(s.getMandateState("mnd_1")).toEqual({
+      consumed_paise: 0,
+      txn_count: 0,
+      status: "active",
+    });
+
+    const after = s.consumeEnvelope("mnd_1", paise(55_000));
+    expect(after.consumed_paise).toBe(55_000);
+    expect(after.txn_count).toBe(1);
+    s.close();
+  });
+
+  it("restores budget on refund rather than silently burning it", () => {
+    const s = store();
+    s.putMandate(signed);
+    s.consumeEnvelope("mnd_1", paise(55_000));
+    s.restoreEnvelope("mnd_1", paise(55_000));
+    expect(s.getMandateState("mnd_1")).toEqual({
+      consumed_paise: 0,
+      txn_count: 0,
+      status: "active",
+    });
+    s.close();
+  });
+
+  it("releases the residual when the envelope is closed", () => {
+    const s = store();
+    s.putMandate(signed);
+    s.consumeEnvelope("mnd_1", paise(60_000));
+    const { released_paise } = s.closeEnvelope("mnd_1");
+    expect(released_paise).toBe(140_000);
+    expect(s.getMandateState("mnd_1")?.status).toBe("closed");
+    s.close();
+  });
+
+  it("re-registering a mandate preserves its drawdown", () => {
+    const s = store();
+    s.putMandate(signed);
+    s.consumeEnvelope("mnd_1", paise(60_000));
+    s.putMandate(signed); // e.g. reseeding
+    expect(s.getMandateState("mnd_1")?.consumed_paise).toBe(60_000);
+    s.close();
+  });
+});
+
+describe("freeze switch and webhook dedupe", () => {
+  it("defaults to not frozen and toggles", () => {
+    const s = store();
+    expect(s.isFrozen()).toBe(false);
+    s.setFrozen(true);
+    expect(s.isFrozen()).toBe(true);
+    s.setFrozen(false);
+    expect(s.isFrozen()).toBe(false);
+    s.close();
+  });
+
+  it("remembers seen webhook event ids idempotently", () => {
+    const s = store();
+    expect(s.hasSeenEvent("evt_1")).toBe(false);
+    s.markEventSeen("evt_1");
+    s.markEventSeen("evt_1");
+    expect(s.hasSeenEvent("evt_1")).toBe(true);
+    s.close();
+  });
+});
+
+describe("catalog", () => {
+  it("returns a sku-keyed map for a merchant, ready for Dwaar", () => {
+    const s = store();
+    s.putItem(item({ sku: "A" }));
+    s.putItem(item({ sku: "B" }));
+    s.putItem(item({ sku: "C", merchant_id: "mch_other" }));
+
+    const cat = s.catalogFor("mch_demo");
+    expect([...cat.keys()].sort()).toEqual(["A", "B"]);
+    s.close();
+  });
+
+  it("reflects live stock, not the stock frozen into the item JSON", () => {
+    const s = store();
+    s.putItem(item({ stock: 5 }));
+    s.reserveStock("SKU_LAST_ONE", 2);
+    expect(s.catalogFor("mch_demo").get("SKU_LAST_ONE")?.stock).toBe(3);
+    s.close();
+  });
+});

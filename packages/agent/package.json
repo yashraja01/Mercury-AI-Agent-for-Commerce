@@ -18,6 +18,7 @@
     "@mercury/core": "*",
     "@mercury/dwaar": "*",
     "@mercury/sakshi": "*",
-    "@mercury/rail": "*"
+    "@mercury/rail": "*",
+    "@mercury/store": "*"
   }
 }
