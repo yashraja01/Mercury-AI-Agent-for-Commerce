@@ -186,18 +186,30 @@ export type Proposal = z.infer<typeof zProposal>;
 /* ------------------------------------------------------------------ decisions */
 
 export const RULE_IDS = [
-  "MANDATE.ENVELOPE_REMAINING",
-  "MANDATE.PER_TXN_CAP",
-  "MANDATE.VELOCITY",
+  /** Merchant pulled the global kill switch. Checked first, always. */
+  "CIRCUIT.FROZEN",
+  /** Mandate signature does not verify against the registered principal key. */
+  "MANDATE.SIGNATURE",
+  /** now is outside [not_before, expires_at]. */
   "MANDATE.EXPIRY",
+  "MANDATE.PER_TXN_CAP",
+  "MANDATE.ENVELOPE_REMAINING",
+  "MANDATE.VELOCITY",
   "SCOPE.MERCHANT_ALLOWLIST",
   "SCOPE.CATEGORY_ALLOWLIST",
-  "MARGIN.FLOOR_BREACH",
-  "DISCOUNT.BPS_CAP",
-  "DRIFT.AMOUNT_MISMATCH",
-  "TOKEN.REPLAY",
+  /** Proposal references a SKU the merchant does not sell. */
+  "CATALOG.UNKNOWN_SKU",
+  /** Quantity below the SKU minimum order quantity (B2B). */
+  "CATALOG.BELOW_MOQ",
   "INVENTORY.INSUFFICIENT",
-  "CIRCUIT.FROZEN",
+  /** Offered unit price below cost * (1 + min_margin_bps). */
+  "MARGIN.FLOOR_BREACH",
+  /** Discount off list exceeds the merchant ceiling. */
+  "DISCOUNT.BPS_CAP",
+  /** The amount the LLM quoted differs from the amount Dwaar computed. */
+  "DRIFT.AMOUNT_MISMATCH",
+  /** Intent token already spent. */
+  "TOKEN.REPLAY",
 ] as const;
 export const zRuleId = z.enum(RULE_IDS);
 export type RuleId = z.infer<typeof zRuleId>;

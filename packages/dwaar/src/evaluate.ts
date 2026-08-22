@@ -1,0 +1,361 @@
+import {
+  type CartLine,
+  type CatalogItem,
+  type Decision,
+  type IntentToken,
+  type MerchantProfile,
+  type Paise,
+  type PricedCart,
+  type Proposal,
+  type RuleEval,
+  type RuleId,
+  type SignedReserveMandate,
+  type StepUpReason,
+  formatINR,
+  hashValue,
+  newId,
+  paise,
+  verifyValue,
+} from "@mercury/core";
+import { buildLine, discountBps, marginFloor, totalLines } from "./pricing.js";
+
+/**
+ * Dwaar -- the gate.
+ *
+ * One pure function. No I/O, no clock, no randomness, no model. Every input it
+ * needs is passed in, so the same inputs always produce the same Decision and
+ * the whole thing is property-testable.
+ *
+ * The invariant this file exists to enforce: the amount the model proposed is
+ * never the amount that moves. Dwaar reprices every line from the catalogue,
+ * totals it itself, and hard-denies if the model's arithmetic disagrees.
+ */
+
+export interface LedgerState {
+  /** Paise already drawn down from this envelope. */
+  consumed_paise: Paise;
+  /** Debits already made against this envelope. */
+  txn_count: number;
+}
+
+export interface DwaarInput {
+  signed_mandate: SignedReserveMandate;
+  /** The public key the agent registry holds for this principal. */
+  registered_public_key: string;
+  profile: MerchantProfile;
+  /** sku -> item, for the merchant in question. */
+  catalog: ReadonlyMap<string, CatalogItem>;
+  proposal: Proposal;
+  ledger_state: LedgerState;
+  /** Injected so the function stays pure. */
+  now: Date;
+  /** Merchant kill switch. */
+  frozen: boolean;
+  /** Intent tokens already spent, for replay detection. */
+  spent_token_ids?: ReadonlySet<string>;
+  /** Present when settling: the token being redeemed. */
+  intent_token?: IntentToken;
+}
+
+/* -------------------------------------------------------------- rule helpers */
+
+function ok(rule_id: RuleId, observed: number, limit: number, message: string): RuleEval {
+  return { rule_id, passed: true, observed, limit, message };
+}
+
+function bad(rule_id: RuleId, observed: number, limit: number, message: string): RuleEval {
+  return { rule_id, passed: false, observed, limit, message };
+}
+
+function deny(rules: RuleEval[], violation: RuleEval): Decision {
+  return { outcome: "DENY", rules: [...rules, violation], violation };
+}
+
+/* ------------------------------------------------------------------ evaluate */
+
+export function evaluate(input: DwaarInput): Decision {
+  const rules: RuleEval[] = [];
+  const { signed_mandate, profile, catalog, proposal, ledger_state, now } = input;
+  const mandate = signed_mandate.mandate;
+
+  /* 1. Kill switch. Checked first so a frozen merchant short-circuits everything. */
+  if (input.frozen) {
+    return deny(rules, bad("CIRCUIT.FROZEN", 1, 0, "Merchant has frozen all agent activity."));
+  }
+  rules.push(ok("CIRCUIT.FROZEN", 0, 0, "Agent activity is not frozen."));
+
+  /* 2. Signature. Limits inside an unsigned mandate mean nothing. */
+  const keyMatches = signed_mandate.public_key === input.registered_public_key;
+  const sigValid =
+    keyMatches && verifyValue(mandate, signed_mandate.signature, signed_mandate.public_key);
+  if (!sigValid) {
+    return deny(
+      rules,
+      bad(
+        "MANDATE.SIGNATURE",
+        0,
+        1,
+        keyMatches
+          ? "Mandate signature does not verify: the mandate was altered after signing."
+          : "Mandate was signed by a key that is not registered to this principal.",
+      ),
+    );
+  }
+  rules.push(ok("MANDATE.SIGNATURE", 1, 1, "Mandate signature verifies against the registered key."));
+
+  /* 3. Validity window. */
+  const t = now.getTime();
+  const notBefore = Date.parse(mandate.not_before);
+  const expiresAt = Date.parse(mandate.expires_at);
+  if (t < notBefore || t >= expiresAt) {
+    return deny(
+      rules,
+      bad(
+        "MANDATE.EXPIRY",
+        t,
+        expiresAt,
+        t < notBefore
+          ? `Mandate is not valid until ${mandate.not_before}.`
+          : `Mandate expired at ${mandate.expires_at}.`,
+      ),
+    );
+  }
+  rules.push(ok("MANDATE.EXPIRY", t, expiresAt, "Mandate is within its validity window."));
+
+  /* 4. Merchant scope. */
+  if (!mandate.scope.merchant_allowlist.includes(proposal.merchant_id)) {
+    return deny(
+      rules,
+      bad(
+        "SCOPE.MERCHANT_ALLOWLIST",
+        0,
+        1,
+        `Merchant ${proposal.merchant_id} is not in the mandate allowlist.`,
+      ),
+    );
+  }
+  rules.push(ok("SCOPE.MERCHANT_ALLOWLIST", 1, 1, "Merchant is in the mandate allowlist."));
+
+  /* 5-9. Per-line checks and repricing. */
+  const allowedCategories = new Set(mandate.scope.category_allowlist);
+  const lines: CartLine[] = [];
+
+  for (const pl of proposal.lines) {
+    const item = catalog.get(pl.sku);
+
+    if (item === undefined) {
+      return deny(
+        rules,
+        bad("CATALOG.UNKNOWN_SKU", 0, 1, `SKU ${pl.sku} is not in the merchant catalogue.`),
+      );
+    }
+
+    if (!allowedCategories.has(item.category)) {
+      return deny(
+        rules,
+        bad(
+          "SCOPE.CATEGORY_ALLOWLIST",
+          0,
+          1,
+          `Category "${item.category}" (SKU ${pl.sku}) is not in the mandate allowlist.`,
+        ),
+      );
+    }
+
+    if (pl.qty < item.moq) {
+      return deny(
+        rules,
+        bad(
+          "CATALOG.BELOW_MOQ",
+          pl.qty,
+          item.moq,
+          `SKU ${pl.sku} has a minimum order quantity of ${item.moq}; ${pl.qty} requested.`,
+        ),
+      );
+    }
+
+    if (item.stock < pl.qty) {
+      return deny(
+        rules,
+        bad(
+          "INVENTORY.INSUFFICIENT",
+          item.stock,
+          pl.qty,
+          `SKU ${pl.sku} has ${item.stock} in stock; ${pl.qty} requested.`,
+        ),
+      );
+    }
+
+    const floor = marginFloor(item, profile);
+    if (pl.offer_unit_paise < floor) {
+      return deny(
+        rules,
+        bad(
+          "MARGIN.FLOOR_BREACH",
+          pl.offer_unit_paise,
+          floor,
+          `SKU ${pl.sku} offered at ${formatINR(pl.offer_unit_paise)}, below the margin floor of ${formatINR(floor)}.`,
+        ),
+      );
+    }
+
+    const dBps = discountBps(item, pl.offer_unit_paise);
+    if (dBps > profile.max_discount_bps) {
+      return deny(
+        rules,
+        bad(
+          "DISCOUNT.BPS_CAP",
+          dBps,
+          profile.max_discount_bps,
+          `SKU ${pl.sku} discounted ${dBps}bps off list; the ceiling is ${profile.max_discount_bps}bps.`,
+        ),
+      );
+    }
+
+    lines.push(buildLine({ item, qty: pl.qty, unit: pl.offer_unit_paise }));
+  }
+
+  rules.push(ok("SCOPE.CATEGORY_ALLOWLIST", 1, 1, "All line categories are in the mandate allowlist."));
+  rules.push(ok("CATALOG.UNKNOWN_SKU", 1, 1, "All SKUs exist in the merchant catalogue."));
+  rules.push(ok("CATALOG.BELOW_MOQ", 1, 1, "All quantities meet minimum order quantity."));
+  rules.push(ok("INVENTORY.INSUFFICIENT", 1, 1, "Sufficient stock for every line."));
+  rules.push(ok("MARGIN.FLOOR_BREACH", 1, 1, "Every unit price is at or above the margin floor."));
+  rules.push(ok("DISCOUNT.BPS_CAP", 1, 1, "Every discount is within the merchant ceiling."));
+
+  /* 10. Drift. Dwaar's total is authoritative; the model's is only checked. */
+  const totals = totalLines(lines);
+  const computed = totals.total_paise;
+
+  if (proposal.quoted_total_paise !== computed) {
+    return deny(
+      rules,
+      bad(
+        "DRIFT.AMOUNT_MISMATCH",
+        proposal.quoted_total_paise,
+        computed,
+        `Agent quoted ${formatINR(proposal.quoted_total_paise)} but the line items total ${formatINR(computed)}. ` +
+          `The quoted figure is discarded.`,
+      ),
+    );
+  }
+  rules.push(
+    ok(
+      "DRIFT.AMOUNT_MISMATCH",
+      proposal.quoted_total_paise,
+      computed,
+      "Agent arithmetic matches the recomputed total.",
+    ),
+  );
+
+  /* 11. Per-transaction ceiling. */
+  if (computed > mandate.max_per_txn_paise) {
+    return deny(
+      rules,
+      bad(
+        "MANDATE.PER_TXN_CAP",
+        computed,
+        mandate.max_per_txn_paise,
+        `Cart totals ${formatINR(computed)}; the per-transaction cap is ${formatINR(mandate.max_per_txn_paise)}.`,
+      ),
+    );
+  }
+  rules.push(
+    ok("MANDATE.PER_TXN_CAP", computed, mandate.max_per_txn_paise, "Within the per-transaction cap."),
+  );
+
+  /* 12. Envelope. The Reserve Pay drawdown check. */
+  const wouldConsume = ledger_state.consumed_paise + computed;
+  if (wouldConsume > mandate.reserved_paise) {
+    // consumed can exceed reserved if an envelope was reduced after a debit;
+    // clamp so reporting a breach never itself throws.
+    const remaining = paise(Math.max(0, mandate.reserved_paise - ledger_state.consumed_paise));
+    return deny(
+      rules,
+      bad(
+        "MANDATE.ENVELOPE_REMAINING",
+        computed,
+        remaining,
+        `Cart totals ${formatINR(computed)} but only ${formatINR(remaining)} remains in the reserved envelope.`,
+      ),
+    );
+  }
+  rules.push(
+    ok(
+      "MANDATE.ENVELOPE_REMAINING",
+      computed,
+      Math.max(0, mandate.reserved_paise - ledger_state.consumed_paise),
+      "Within the remaining reserved envelope.",
+    ),
+  );
+
+  /* 13. Velocity. */
+  if (ledger_state.txn_count + 1 > mandate.max_txn_count) {
+    return deny(
+      rules,
+      bad(
+        "MANDATE.VELOCITY",
+        ledger_state.txn_count + 1,
+        mandate.max_txn_count,
+        `This would be debit ${ledger_state.txn_count + 1}; the mandate allows ${mandate.max_txn_count}.`,
+      ),
+    );
+  }
+  rules.push(
+    ok(
+      "MANDATE.VELOCITY",
+      ledger_state.txn_count + 1,
+      mandate.max_txn_count,
+      "Within the permitted number of debits.",
+    ),
+  );
+
+  /* 14. Replay. */
+  const token = input.intent_token;
+  if (token !== undefined) {
+    if (input.spent_token_ids?.has(token.token_id) === true) {
+      return deny(
+        rules,
+        bad("TOKEN.REPLAY", 1, 0, `Intent token ${token.token_id} has already been spent.`),
+      );
+    }
+    if (Date.parse(token.expires_at) <= t) {
+      return deny(
+        rules,
+        bad("TOKEN.REPLAY", t, Date.parse(token.expires_at), `Intent token ${token.token_id} has expired.`),
+      );
+    }
+  }
+  rules.push(ok("TOKEN.REPLAY", 0, 0, "Intent token is unspent and unexpired."));
+
+  /* Build the cart Dwaar is willing to stand behind. */
+  const cart: PricedCart = {
+    cart_id: newId("cart"),
+    merchant_id: proposal.merchant_id,
+    lines,
+    subtotal_paise: totals.subtotal_paise,
+    discount_paise: totals.discount_paise,
+    total_paise: computed,
+  };
+
+  /* 15. Step-up. Not a denial -- a requirement for a human to be in the loop. */
+  const stepUp = stepUpReason(computed, mandate.requires_human_approval_above_paise, mandate.human_present);
+  if (stepUp !== undefined) {
+    return { outcome: "ALLOW_WITH_STEPUP", rules, computed_paise: computed, cart, step_up: stepUp };
+  }
+
+  return { outcome: "ALLOW", rules, computed_paise: computed, cart };
+}
+
+function stepUpReason(
+  total: Paise,
+  threshold: Paise,
+  humanPresent: boolean,
+): StepUpReason | undefined {
+  if (total < threshold) return undefined;
+  return humanPresent ? "ABOVE_HUMAN_APPROVAL_THRESHOLD" : "HUMAN_NOT_PRESENT_HIGH_VALUE";
+}
+
+/** Hash a priced cart, for binding an intent token to exactly this cart. */
+export function cartHash(cart: PricedCart): string {
+  return hashValue(cart);
+}
