@@ -54,13 +54,14 @@ Buyer side          external Claude (MCP)  |  in-app buyer agent
   | MERCURY GATEWAY — Next.js route handlers                    |
   |                                                             |
   |  @mercury/core     types · Paise · Zod · canonical JSON     |
-  |  @mercury/agent    Revenue Agent + buyer agent — PROPOSES   |
+  |  @mercury/agent    Revenue Agent + Engine — PROPOSES ONLY   |
   |  @mercury/dwaar    ## DWAAR ## pure · deterministic · NO LLM|
   |  @mercury/rail     RazorpayPort -> FixtureRail | LiveRail   |
+  |  @mercury/store    catalogue · mandates · tokens · orders     |
   |  @mercury/sakshi   ## SAKSHI ## append-only sha256 chain    |
   +-------------------------------------------------------------+
               |                                    |
-      SQLite (WAL) + better-sqlite3   Razorpay TEST (rzp_test_...)
+      SQLite (WAL) via node:sqlite     Razorpay TEST (rzp_test_...)
 ```
 
 **The invariant that defines the system:** the LLM proposes; Dwaar disposes.
@@ -79,9 +80,10 @@ field instead.
 | Buyer | Consumer's shopping agent | Restaurant/retail owner's procurement agent |
 | Mandate archetype | Recurring weekly envelope, Human-**Not**-Present | Large single-deal envelope, Human-Present step-up |
 | Revenue levers | Bundling, substitution, basket-building | Bulk tiers, MOQ, credit terms, multi-vendor basket |
-| Catalog seed | `db/seed/quick-commerce.ts` | `db/seed/b2b-procurement.ts` |
+| Catalog seed | `QUICK_COMMERCE` in `db/seed/catalogs.ts` | `B2B_PROCUREMENT`, same file |
 | Agent persona | `prompts/persona.quick-commerce.md` | `prompts/persona.b2b.md` |
-| Shared | **dwaar · sakshi · rail · tool schemas · FSM · UI** | <- identical |
+| Mandate seed | `mnd_household_weekly` | `mnd_restaurant_restock` |
+| Shared | **dwaar · sakshi · store · rail · engine · tool schemas · FSM · UI** | <- identical |
 
 `MerchantProfile` is the only per-vertical policy input Dwaar reads:
 
@@ -103,7 +105,7 @@ type MerchantProfile = {
 | Language | TypeScript, `strict` + `noUncheckedIndexedAccess` | Deterministic type safety |
 | App | Next.js 15 (App Router) — one runnable app | `npm run dev` starts everything; raw body via `await req.text()` for webhook HMAC |
 | UI | Tailwind + shadcn/ui | Fast, clean |
-| DB | SQLite (WAL) + better-sqlite3 | Zero install; ships seeded. `BEGIN IMMEDIATE` gives real inventory locking — no Redis |
+| DB | SQLite (WAL) via `node:sqlite` | Zero install, zero deps; ships seeded. `BEGIN IMMEDIATE` gives real inventory locking — no Redis |
 | LLM | `@anthropic-ai/sdk`, `claude-opus-5` | Adaptive thinking, `output_config.effort: "high"` |
 | LLM safety | `betaZodTool` + `strict: true` tools | Guarantees `tool_use.input` validates exactly |
 | LLM cost | `cache_control: ephemeral` on frozen prompt + catalog | Opus 5 caches from 512 tokens; volatile turn state goes after the breakpoint |
@@ -120,9 +122,37 @@ type MerchantProfile = {
 | `dwaar` | `evaluate()`, pricing/margin, drift detection, FSM | Do I/O, call an LLM, or import `rail` |
 | `sakshi` | Append + verify hash chain | Mutate or delete a row |
 | `rail` | `RazorpayPort` impls, HMAC verify, webhook parsing | Decide anything policy-related |
-| `agent` | LLM negotiation, tool schemas, prompts | Compute a final price or touch a key |
+| `store` | Mutable working state: catalogue, mandates, tokens, orders | Touch the Sakshi chain |
+| `agent` | LLM negotiation, tool schemas, prompts, the Engine | Compute a final price or touch a key |
 
-## 8. The rail port
+## 8. The negotiator port
+
+`agent` exposes the negotiator behind an interface, for the same reason `rail`
+does (D10, D13):
+
+```ts
+interface Negotiator {
+  readonly mode: "llm" | "scripted"
+  negotiate(turn: NegotiationTurn): Promise<NegotiationResult>
+}
+```
+
+- **`ScriptedRevenueAgent`** — deterministic, no API key, no network, no spend.
+  The default in tests and in `npm run demo`. It calls the *same* tool
+  implementations and submits through the *same* gate; only the judgement is
+  substituted.
+- **`LlmRevenueAgent`** — `claude-opus-5`, adaptive thinking, `strict: true`
+  tools, cached `tools -> system` prefix.
+
+A negotiator's entire reach into the system is one function:
+
+```ts
+submit: (proposal: Proposal) => Promise<GateFeedback>
+```
+
+No store, no ledger, no rail, no key. `gateVia(engine, ...)` supplies it.
+
+## 9. The rail port
 
 `rail` exposes one interface with two implementations, chosen by `RAIL_MODE`:
 
@@ -143,12 +173,12 @@ interface RazorpayPort {
 
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
-## 9. Money rule
+## 10. Money rule
 
 All money is **integer paise**, branded type `Paise`. No floats anywhere. Zod
 rejects non-integers at every boundary. Razorpay amounts are paise by definition.
 
-## 10. Constraints
+## 11. Constraints
 
 - Razorpay **test mode only**. Test UPI: `success@razorpay` / `failure@razorpay`.
 - Webhook signature: `HMAC_SHA256(rawBody, webhookSecret)` -> `X-Razorpay-Signature`.
@@ -158,7 +188,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 - Order `receipt` <= 40 chars and unique. `notes` <= 15 pairs, <= 256 chars each.
 - Secrets live only in `.env` (git-ignored). `.env.example` is committed.
 
-## 11. Protocol alignment
+## 12. Protocol alignment
 
 | Ecosystem primitive | Our implementation |
 |---|---|
@@ -170,7 +200,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 | UCP / ACP capability + product feed | Machine-readable catalog endpoint |
 | Instant revocation | Global freeze flag -> `CIRCUIT.FROZEN` |
 
-## 12. Glossary
+## 13. Glossary
 
 - **Dwaar** — the deterministic policy gate. Pure function, no I/O, no LLM.
 - **Sakshi** — the append-only, hash-chained audit ledger.

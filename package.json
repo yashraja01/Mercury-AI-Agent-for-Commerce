@@ -19,7 +19,6 @@
     "verify": "tsx scripts/verify-chain.ts",
     "seed": "tsx scripts/seed.ts",
     "demo": "tsx scripts/demo.ts",
-    "guard": "tsx scripts/guard.ts",
     "clean": "rimraf packages/*/dist apps/*/dist **/*.tsbuildinfo"
   },
   "devDependencies": {
@@ -31,11 +30,13 @@
     "vitest": "^3.2.7"
   },
   "dependencies": {
-    "zod": "^3.24.1",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@mercury/core": "*",
+    "@mercury/dwaar": "*",
+    "@mercury/rail": "*",
     "@mercury/sakshi": "*",
     "@mercury/store": "*",
-    "@mercury/dwaar": "*",
-    "@mercury/rail": "*"
+    "zod": "^3.24.1",
+    "@mercury/agent": "*"
   }
 }
