@@ -60,10 +60,18 @@ export function gateVia(engine: Engine, opts: GateBridgeOptions): GateBridge {
       results.push(result);
 
       if (result.kind === "DENIED") {
+        // A denial carries no priced cart, but a drift denial still knows what
+        // Dwaar computed: the drift rule tests the agent's figure (observed)
+        // against Dwaar's own (limit). Surfacing it means the one case that
+        // exists to show the two numbers side by side can actually show them.
+        const drift = result.decision.rules.find(
+          (r) => r.rule_id === "DRIFT.AMOUNT_MISMATCH" && !r.passed,
+        );
         return {
           outcome: "DENY",
           rule_ids: [result.rule_id],
           messages: [messageOf(result.decision.violation)],
+          ...(drift === undefined ? {} : { computed_total_paise: drift.limit }),
         };
       }
 

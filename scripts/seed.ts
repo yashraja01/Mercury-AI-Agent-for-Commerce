@@ -2,8 +2,7 @@ import { rmSync } from "node:fs";
 import { Sakshi } from "@mercury/sakshi";
 import { Store } from "@mercury/store";
 import { formatINR, hashValue, paise } from "@mercury/core";
-import { ALL_ITEMS, ALL_MERCHANTS } from "../db/seed/catalogs.js";
-import { seedPrincipals } from "../db/seed/mandates.js";
+import { ALL_ITEMS, ALL_MERCHANTS, seedPrincipals } from "@mercury/seed";
 
 /**
  * Seed a fresh Mercury database.

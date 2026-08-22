@@ -12,14 +12,16 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && npm run build -w @mercury/web",
     "typecheck": "tsc --build --force",
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "tsx scripts/verify-chain.ts",
     "seed": "tsx scripts/seed.ts",
     "demo": "tsx scripts/demo.ts",
-    "clean": "rimraf packages/*/dist apps/*/dist **/*.tsbuildinfo"
+    "clean": "rimraf packages/*/dist apps/*/dist **/*.tsbuildinfo",
+    "dev": "npm run dev -w @mercury/web",
+    "start": "npm run start -w @mercury/web"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -37,6 +39,7 @@
     "@mercury/sakshi": "*",
     "@mercury/store": "*",
     "zod": "^3.24.1",
-    "@mercury/agent": "*"
+    "@mercury/agent": "*",
+    "@mercury/seed": "*"
   }
 }

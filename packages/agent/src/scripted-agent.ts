@@ -1,4 +1,4 @@
-import type { Proposal } from "@mercury/core";
+import type { Proposal, RuleId } from "@mercury/core";
 import { formatINR, paise } from "@mercury/core";
 import type {
   Negotiator,
@@ -76,6 +76,38 @@ function nearestQty(text: string, near: string): number | undefined {
   const n = Number.parseInt(m[1], 10);
   return Number.isSafeInteger(n) && n > 0 && n <= 5_000 ? n : undefined;
 }
+
+/**
+ * What the merchant says when the gate refuses.
+ *
+ * A rule id is an operator's fact, not a sentence to read out to a customer.
+ * The verdict panel and the ledger both carry the exact rule, the observed
+ * value and the limit; the buyer gets a plain reason. These are fixed strings,
+ * so nothing a model writes can end up standing in for a policy decision.
+ */
+const DECLINE_DEFAULT = "I cannot complete that. Let me know if you want a smaller basket.";
+
+const DECLINE: Partial<Record<RuleId, string>> = {
+  "MARGIN.FLOOR_BREACH":
+    "That is below what we can sell it for. The price I quoted is the lowest we can do.",
+  "DISCOUNT.BPS_CAP": "That discount is deeper than we are allowed to go on this line.",
+  "DRIFT.AMOUNT_MISMATCH":
+    "My total did not match the priced cart, so the offer was rejected before it could be charged. Nothing was taken.",
+  "MANDATE.PER_TXN_CAP":
+    "That basket is larger than a single transaction on your budget allows. Split it, or ask your human to raise the cap.",
+  "MANDATE.ENVELOPE_REMAINING":
+    "That exceeds what is left in your budget for this period.",
+  "MANDATE.VELOCITY": "Your budget has no orders left in it for this period.",
+  "MANDATE.EXPIRY": "Your budget authorisation has expired. Your human needs to issue a new one.",
+  "MANDATE.SIGNATURE": "I could not verify your budget authorisation, so I cannot transact.",
+  "INVENTORY.INSUFFICIENT": "Another buyer took the last of that stock while we were talking.",
+  "CATALOG.UNKNOWN_SKU": "We do not stock that.",
+  "CATALOG.BELOW_MOQ": "That is below the minimum order quantity for this line.",
+  "SCOPE.MERCHANT_ALLOWLIST": "Your budget is not scoped to buy from us.",
+  "SCOPE.CATEGORY_ALLOWLIST": "Your budget is not scoped to that category.",
+  "TOKEN.REPLAY": "That authorisation has already been used.",
+  "CIRCUIT.FROZEN": "Spending is frozen on our side right now. Nothing can be charged.",
+};
 
 export class ScriptedRevenueAgent implements Negotiator {
   readonly mode = "scripted" as const;
@@ -181,9 +213,8 @@ export class ScriptedRevenueAgent implements Negotiator {
 
   #reply(settled: NegotiationRound | undefined, rounds: readonly NegotiationRound[]): string {
     if (settled === undefined) {
-      const last = rounds.at(-1);
-      const why = last?.feedback.messages[0] ?? "the offer did not pass the gate";
-      return `I cannot do that price. ${why}`;
+      const rule = rounds.at(-1)?.feedback.rule_ids[0];
+      return DECLINE[rule ?? "MARGIN.FLOOR_BREACH"] ?? DECLINE_DEFAULT;
     }
     const total = settled.feedback.computed_total_paise ?? settled.proposal.quoted_total_paise;
     const items = settled.proposal.lines.map((l) => `${l.qty} x ${l.sku}`).join(", ");

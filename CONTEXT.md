@@ -80,7 +80,7 @@ field instead.
 | Buyer | Consumer's shopping agent | Restaurant/retail owner's procurement agent |
 | Mandate archetype | Recurring weekly envelope, Human-**Not**-Present | Large single-deal envelope, Human-Present step-up |
 | Revenue levers | Bundling, substitution, basket-building | Bulk tiers, MOQ, credit terms, multi-vendor basket |
-| Catalog seed | `QUICK_COMMERCE` in `db/seed/catalogs.ts` | `B2B_PROCUREMENT`, same file |
+| Catalog seed | `QUICK_COMMERCE` in `packages/seed/src/catalogs.ts` | `B2B_PROCUREMENT`, same file |
 | Agent persona | `prompts/persona.quick-commerce.md` | `prompts/persona.b2b.md` |
 | Mandate seed | `mnd_household_weekly` | `mnd_restaurant_restock` |
 | Shared | **dwaar · sakshi · store · rail · engine · tool schemas · FSM · UI** | <- identical |
@@ -104,7 +104,8 @@ type MerchantProfile = {
 | Repo | **npm workspaces** | npm ships with Node — zero install friction for judges (see D12) |
 | Language | TypeScript, `strict` + `noUncheckedIndexedAccess` | Deterministic type safety |
 | App | Next.js 15 (App Router) — one runnable app | `npm run dev` starts everything; raw body via `await req.text()` for webhook HMAC |
-| UI | Tailwind + shadcn/ui | Fast, clean |
+| UI | Tailwind v4, hand-built components | shadcn adds a generator and a component tree for ~8 elements; see D15 |
+| UI transport | SSE from a Node-runtime route | A verdict that arrives already decided is a report, not a demonstration |
 | DB | SQLite (WAL) via `node:sqlite` | Zero install, zero deps; ships seeded. `BEGIN IMMEDIATE` gives real inventory locking — no Redis |
 | LLM | `@anthropic-ai/sdk`, `claude-opus-5` | Adaptive thinking, `output_config.effort: "high"` |
 | LLM safety | `betaZodTool` + `strict: true` tools | Guarantees `tool_use.input` validates exactly |
@@ -123,7 +124,9 @@ type MerchantProfile = {
 | `sakshi` | Append + verify hash chain | Mutate or delete a row |
 | `rail` | `RazorpayPort` impls, HMAC verify, webhook parsing | Decide anything policy-related |
 | `store` | Mutable working state: catalogue, mandates, tokens, orders | Touch the Sakshi chain |
+| `seed` | Catalogue + mandate fixtures for both verticals | Contain logic of any kind |
 | `agent` | LLM negotiation, tool schemas, prompts, the Engine | Compute a final price or touch a key |
+| `web` | Mission Control: theatre, gate panel, ledger explorer | Decide anything; it is a spectator |
 
 ## 8. The negotiator port
 
@@ -173,12 +176,28 @@ interface RazorpayPort {
 
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
-## 10. Money rule
+## 10. Mission Control
+
+One page, three panels, all spectators on the same run. The UI decides nothing;
+`scripts/demo.ts` drives the identical path with the browser closed.
+
+| Panel | Shows | Why it exists |
+|---|---|---|
+| Negotiation theatre | Buyer and merchant turns, each offer, each verdict, settlement | Watch the gate decide, in order |
+| Dwaar (द्वार) | **Agent quoted vs Dwaar computed**, then every rule with observed and limit | The product thesis as two numbers |
+| Sakshi (साक्षी) | Each entry with `prev_hash <- hash`, and a live `verify` | The chain, checkable in front of you |
+
+Controls: seven scenarios (four of which reproduce a failure-audit row), a
+scripted/Claude agent switch, a freeze kill switch, and reset.
+
+Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
+
+## 11. Money rule
 
 All money is **integer paise**, branded type `Paise`. No floats anywhere. Zod
 rejects non-integers at every boundary. Razorpay amounts are paise by definition.
 
-## 11. Constraints
+## 12. Constraints
 
 - Razorpay **test mode only**. Test UPI: `success@razorpay` / `failure@razorpay`.
 - Webhook signature: `HMAC_SHA256(rawBody, webhookSecret)` -> `X-Razorpay-Signature`.
@@ -188,7 +207,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 - Order `receipt` <= 40 chars and unique. `notes` <= 15 pairs, <= 256 chars each.
 - Secrets live only in `.env` (git-ignored). `.env.example` is committed.
 
-## 12. Protocol alignment
+## 13. Protocol alignment
 
 | Ecosystem primitive | Our implementation |
 |---|---|
@@ -200,7 +219,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 | UCP / ACP capability + product feed | Machine-readable catalog endpoint |
 | Instant revocation | Global freeze flag -> `CIRCUIT.FROZEN` |
 
-## 13. Glossary
+## 14. Glossary
 
 - **Dwaar** — the deterministic policy gate. Pure function, no I/O, no LLM.
 - **Sakshi** — the append-only, hash-chained audit ledger.

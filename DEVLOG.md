@@ -23,7 +23,7 @@
 | M3 | `rail` + FixtureRail | ☑ done | port iface, recorded fixtures, both HMACs, webhook gate |
 | M3.5 | `store` + `Engine` | ☑ done | SQLite working state, orchestration, `BEGIN IMMEDIATE` locking |
 | M4 | `agent` + two personas | ☑ done | negotiator port, shared strict tools, seed + demo |
-| M5 | Mission Control UI | ☐ todo | Negotiation Theatre, Dwaar panel, Sakshi explorer |
+| M5 | Mission Control UI | ☑ done | Negotiation Theatre, Dwaar panel, Sakshi explorer, SSE, freeze |
 | M6 | MCP server + Agent Card + feed | ☐ todo | external Claude buys end-to-end |
 | M7 | Chaos Console -- verify F1--F7 | ☐ todo | all failure-audit rows green |
 | M8 | Hardening | ☐ todo | LiveRail on test keys, Route (B2B), feed conformance, deploy, video |
@@ -47,6 +47,8 @@ Blocked: —
 | D11 | 2026-08-22 | Naming: **Mercury** / **Dwaar** (द्वार, gate) / **Sakshi** (साक्षी, witness) | Mercury is the god of commerce (*merx* -> *merchant*). Dwaar is a checkpoint every rupee passes through — the rubric's own word is *gated*. Sakshi is the witness that observes without participating, exactly what an append-only ledger is | Kavach (armour — passive defence, weaker fit for a gate); Bahi-Khata (ledger book — accurate but descriptive rather than evidentiary) |
 | D12 | 2026-08-22 | **npm workspaces**, not pnpm | `corepack enable pnpm` needs admin on this machine (EPERM). More importantly npm ships with Node, so a judge needs zero extra installs — and "easy setup" is a scored rubric line | pnpm (requires install/admin); yarn (same problem); Turborepo (unnecessary for 7 packages) |
 | D13 | 2026-08-22 | `agent` behind a **negotiator port**, with `ScriptedRevenueAgent` as the default and `LlmRevenueAgent` alongside it | Same argument as D10, one layer up. The whole suite and every failure scenario must run with no API key, no network and no spend, or they stop being run. The scripted agent is not a mock of the system — it calls the same tool implementations and submits through the same gate; only the judgement is substituted | LLM-in-the-test-loop (non-deterministic, costs money, fails offline); mocking the Anthropic client (asserts our mock, not our gate) |
+| D14 | 2026-08-23 | Seed data moved into a `@mercury/seed` workspace package | Both the CLI seed script and the web app's reset need it, and a bundler cannot reliably reach loose `.ts` files outside the app directory. It also gives M6's MCP server the same fixtures | Keeping `db/seed/*.ts` and importing across the app boundary (fragile resolution); duplicating the fixtures (two sources of truth) |
+| D15 | 2026-08-23 | Tailwind v4 with hand-built components, not shadcn/ui | Mission Control is about eight distinct elements. shadcn adds a generator, a `components/ui` tree and Radix for controls we do not need, and its defaults are exactly the look the UI should not have. CONTEXT updated | shadcn/ui (as originally planned in the stack table) |
 
 ## Failure-recovery audit
 
@@ -65,6 +67,32 @@ Blocked: —
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+
+### 2026-08-23 — M5 Mission Control
+- `apps/web`: Next.js 15 App Router, Tailwind v4, one page and six routes.
+- The Negotiation Theatre streams over **SSE** rather than returning one JSON
+  body. A verdict that arrives with its outcome already known is a report; the
+  panel exists to show the gate deciding, in order.
+- Three panels, all spectators: theatre, Dwaar (agent-quoted vs Dwaar-computed,
+  then every rule with observed and limit), Sakshi (`prev_hash <- hash` per row,
+  with a live `verify` that re-walks the whole chain).
+- Seven scenarios on the bench. Four reproduce a failure-audit row: F1 twice
+  (below-floor under buyer pressure, and a one-paisa arithmetic lie), F6, F2.
+  Plus a freeze kill switch that puts `CIRCUIT.FROZEN` in front of everything.
+- D14: seed data moved to `@mercury/seed` so the app and the CLI share fixtures.
+- D15: hand-built Tailwind components instead of shadcn/ui.
+- Two fixes found by looking at the running UI rather than at the tests:
+  - `gateVia` now surfaces Dwaar's own total on a **drift** denial (the drift
+    rule's `limit` is that figure). Without it, the one scenario that exists to
+    show the two numbers side by side could not show them.
+  - The scripted agent no longer reads rule ids and paise counts aloud to the
+    buyer. A rule id is an operator's fact; the buyer gets a plain sentence, and
+    the exact rule stays in the verdict panel and the ledger.
+- Known rough edges: `npm run build` writes `apps/web/.next`, so it will break a
+  `npm run dev` running at the same time (standard Next behaviour). `npm audit`
+  reports 3 high advisories from Next 15's own postcss/sharp; fixing them means
+  Next 16, which is a framework major and the user's call.
+- 134 tests green, production build clean, chain verifies.
 
 ### 2026-08-22 — M4 agent + two personas
 - `@mercury/agent` completed: negotiator port, shared strict tool surface,

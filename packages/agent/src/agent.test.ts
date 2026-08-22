@@ -441,7 +441,9 @@ describe("the Revenue Agent", () => {
 
     expect(calls).toBeLessThanOrEqual(3);
     expect(result.settled).toBeUndefined();
-    expect(result.reply).toContain("cannot do that price");
+    // The buyer is told why in plain words; the rule id stays in the ledger.
+    expect(result.reply).toContain("lowest we can do");
+    expect(result.reply).not.toContain("MARGIN.FLOOR_BREACH");
     h.store.close();
   });
 
