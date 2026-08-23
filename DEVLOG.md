@@ -1,7 +1,11 @@
 # DEVLOG — Mercury
 
-> Append-only. Newest first. Update at the end of every session.
-> Stable project truth lives in CONTEXT.md — do not duplicate it here.
+> Read **Start here next session** first if you are picking this up cold;
+> read CONTEXT.md before that if you have never seen the project.
+>
+> The changelog is append-only, newest first. Everything above it is living
+> state and should be edited in place. Stable project truth lives in
+> CONTEXT.md — do not duplicate it here.
 
 ## Prerequisites
 
@@ -30,6 +34,68 @@
 | M8 | Hardening | ☐ todo | LiveRail on test keys, Route (B2B), feed conformance, deploy, video |
 
 Blocked: —
+
+## Start here next session
+
+**State:** M0–M6.5 committed and green. 176 tests, build clean, chain verifies.
+Last commit `2275f27`. Nothing is half-finished — the tree is a clean stopping
+point, not a pause mid-edit.
+
+**Sanity check before writing code:**
+
+```bash
+npm install && npm run build && npm test    # expect 176 passed
+npm run seed && npm run demo                # both verticals, terminal
+npm run dev                                 # then npm run mcp:smoke elsewhere
+```
+
+**The next work, in the order I would do it.** M7 is the Chaos Console; the
+first item below belongs to it and is the largest remaining gap between the
+failure-audit table and reality.
+
+| # | Task | Why now | Size |
+|---|---|---|---|
+| 1 | `POST /api/webhook/razorpay` wiring `Engine.handleWebhook` | F4/F5 are unit-tested at `WebhookGate` but **no HTTP route exists** — a forged delivery has never been rejected over the wire or landed in Sakshi. Two audit rows depend on it | ~80 lines |
+| 2 | Write `BasketValue` into Sakshi + show uplift in Mission Control | The Goal 1 metric exists on the negotiation result and nobody can see it. Cheap, and it is the number a judge asks about | small |
+| 3 | Lever tools for `LlmRevenueAgent` (`bulk_tier_quote`, `suggest_bundle`) | With Claude driving, Goal 1 reverts to a flat discount — the scripted agent has levers and the LLM one does not. Breaks the scripted/LLM parity M4 was built on | medium |
+| 4 | Run the LLM path once with a real key | `LlmRevenueAgent` has **never executed**. The headline claim rests on unrun code, and it now also lacks levers and holder proofs | small, needs `ANTHROPIC_API_KEY` |
+| 5 | Tests for `apps/web` and `apps/mcp` | Still zero. Every bug in M6 and M6.5 was in app code or scripts, found by hand | medium |
+| 6 | M8 hardening | LiveRail smoke on test keys, deploy, video | large |
+
+**Known gaps, stated plainly:**
+
+- F4/F5 have no end-to-end path (item 1). F1, F2, F3, F6, F7 are observed.
+- `LlmRevenueAgent` is unproven against the real API (item 4).
+- `inferCart` is keyword matching where buyer intent enters the system. It fails
+  safe — a misread costs a negotiation round, never money — but it is the
+  weakest link in the default path.
+- `npm audit` reports 3 high advisories from Next 15's own postcss/sharp.
+  Clearing them means Next 16, a framework major, and that is the user's call.
+- `credit_terms` is declared as a lever and implemented by nothing. It is
+  discussed in the B2B persona as a closing lever the agent may not price, which
+  is defensible, but it is not mechanised like the other three.
+
+**Operational gotchas, all learned the hard way:**
+
+- **Do not run `npm run build` while `npm run dev` is running.** Both write
+  `apps/web/.next`; the dev server 500s until restarted. Standard Next
+  behaviour, bit us three times.
+- **`npm run seed` has no effect on a running gateway.** The server holds its
+  own open SQLite handle. Use Mission Control's Reset button, or restart.
+- **Reset re-mints agent keys**, so `buyer-wallet.json` is rewritten. Any buyer
+  holding old keys starts failing `HOLDER.SIGNATURE`. Both seed paths write the
+  wallet through `writeWallet()` so they cannot drift.
+- **Paths anchor to the repo root, not cwd.** `next dev` runs from `apps/web`;
+  before this was fixed the app kept a second database there and the two stores
+  silently disagreed.
+- **`scripts/` is typechecked separately** (`tsc --noEmit -p scripts/tsconfig.json`,
+  wired into `build` and `typecheck`) because it is not in the composite graph.
+- Killing the dev server on Windows: the npm wrapper survives a plain
+  `taskkill`. Kill by port instead —
+  `Get-NetTCPConnection -LocalPort 3000 -State Listen | %{ Stop-Process -Id $_.OwningProcess -Force }`.
+- **Do not use Python single-quoted strings to write regexes into source.** ``
+  becomes a literal backspace byte and the pattern silently stops matching. Use
+  raw strings, or the Write/Edit tools.
 
 ## Key decisions
 

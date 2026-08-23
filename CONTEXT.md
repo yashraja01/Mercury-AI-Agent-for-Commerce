@@ -97,7 +97,45 @@ type MerchantProfile = {
 }
 ```
 
-## 6. Tech stack
+## 6. Running it
+
+```bash
+npm install
+npm run seed        # fresh DB + mandates + buyer-wallet.json
+npm run dev         # Mission Control on :3000
+```
+
+| Command | Does |
+|---|---|
+| `npm run seed` | Wipes and re-seeds `mercury.db`; mints `buyer-wallet.json` |
+| `npm run dev` | Mission Control + the buyer API on :3000 |
+| `npm run demo` | The whole path on a terminal, no browser, no key |
+| `npm run mcp:smoke` | Drives the MCP server over real stdio JSON-RPC (needs `npm run dev`) |
+| `npm test` | 176 tests. No API key, no network, no spend |
+| `npm run verify` | Re-walks the Sakshi chain independently |
+| `npm run build` | Packages, then `scripts/`, then the Next app |
+
+**Repo map**
+
+```
+packages/core    Paise, canonical JSON, Ed25519, schemas   (imports nothing)
+packages/sakshi  hash-chained ledger
+packages/store   mutable working state (SQLite)
+packages/dwaar   the gate: one pure evaluate()
+packages/rail    RazorpayPort -> FixtureRail | LiveRail
+packages/seed    catalogue + mandate fixtures, buyer wallet
+packages/agent   negotiators, levers, tools, prompts, the Engine
+apps/web         Mission Control + buyer API + Agent Card + feed
+apps/mcp         MCP stdio server (thin client of apps/web)
+prompts/         system.core.md + three personas
+scripts/         seed, demo, verify-chain, mcp-smoke
+```
+
+Paths in the app are anchored to the repo root, not `process.cwd()` — `next dev`
+runs from `apps/web`, and a bare relative path there silently creates a second
+database.
+
+## 7. Tech stack
 
 | Layer | Choice | Why |
 |---|---|---|
@@ -115,7 +153,7 @@ type MerchantProfile = {
 | Validation | Zod | One schema language: API, LLM output, env |
 | Tests | Vitest + fast-check | Property-test Dwaar |
 
-## 7. Module contracts
+## 8. Module contracts
 
 | Module | Owns | Must never |
 |---|---|---|
@@ -129,7 +167,7 @@ type MerchantProfile = {
 | `web` | Mission Control + the buyer-facing API, feed and Agent Card | Decide anything; it is a spectator |
 | `mcp` | Buyer transport over stdio | Accept a price, or hold state of its own |
 
-## 8. The negotiator port
+## 9. The negotiator port
 
 `agent` exposes the negotiator behind an interface, for the same reason `rail`
 does (D10, D13):
@@ -156,7 +194,7 @@ submit: (proposal: Proposal) => Promise<GateFeedback>
 
 No store, no ledger, no rail, no key. `gateVia(engine, ...)` supplies it.
 
-## 9. The revenue levers
+## 10. The revenue levers
 
 Goal 1 says the Revenue Agent grows basket value. These are the mechanisms, and
 `MerchantProfile.levers` is what a merchant permits. A lever a profile does not
@@ -180,7 +218,7 @@ decision.
 padding. `bundle` returns a *suggestion* unless the buyer's message opens the
 door; only then does it enter the cart.
 
-## 10. The buyer surface
+## 11. The buyer surface
 
 An external agent reaches the merchant through three things, in this order:
 
@@ -209,7 +247,7 @@ a discount. A buyer sends a sentence; the merchant's agent proposes; Dwaar
 prices. An MCP tool taking `total_paise` from its caller would put an LLM back
 in the money path, which is the thing this whole design exists to prevent.
 
-## 11. The rail port
+## 12. The rail port
 
 `rail` exposes one interface with two implementations, chosen by `RAIL_MODE`:
 
@@ -230,7 +268,7 @@ interface RazorpayPort {
 
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
-## 12. Mission Control
+## 13. Mission Control
 
 One page, three panels, all spectators on the same run. The UI decides nothing;
 `scripts/demo.ts` drives the identical path with the browser closed.
@@ -246,12 +284,12 @@ scripted/Claude agent switch, a freeze kill switch, and reset.
 
 Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
 
-## 13. Money rule
+## 14. Money rule
 
 All money is **integer paise**, branded type `Paise`. No floats anywhere. Zod
 rejects non-integers at every boundary. Razorpay amounts are paise by definition.
 
-## 14. Constraints
+## 15. Constraints
 
 - Razorpay **test mode only**. Test UPI: `success@razorpay` / `failure@razorpay`.
 - Webhook signature: `HMAC_SHA256(rawBody, webhookSecret)` -> `X-Razorpay-Signature`.
@@ -261,7 +299,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 - Order `receipt` <= 40 chars and unique. `notes` <= 15 pairs, <= 256 chars each.
 - Secrets live only in `.env` (git-ignored). `.env.example` is committed.
 
-## 15. Protocol alignment
+## 16. Protocol alignment
 
 | Ecosystem primitive | Our implementation |
 |---|---|
@@ -273,7 +311,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 | UCP / ACP capability + product feed | `/api/feed/{merchant_id}` (live) |
 | Instant revocation | Global freeze flag -> `CIRCUIT.FROZEN` |
 
-## 16. Glossary
+## 17. Glossary
 
 - **Dwaar** — the deterministic policy gate. Pure function, no I/O, no LLM.
 - **Sakshi** — the append-only, hash-chained audit ledger.
