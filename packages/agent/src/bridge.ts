@@ -1,4 +1,4 @@
-import type { RuleEval } from "@mercury/core";
+import type { HolderProof, RuleEval } from "@mercury/core";
 import type { Engine, ProposeResult } from "./engine.js";
 import type { GateFeedback } from "./negotiator.js";
 
@@ -36,6 +36,9 @@ export interface GateBridgeOptions {
    */
   autoRepair?: boolean;
   llm?: { model: string; effort: string; input_hash: string; output_hash: string };
+  /** Demand proof the caller holds the mandate. True on every buyer-facing path. */
+  requireHolderProof?: boolean;
+  holder_proof?: HolderProof;
 }
 
 function messageOf(rule: RuleEval): string {
@@ -55,6 +58,8 @@ export function gateVia(engine: Engine, opts: GateBridgeOptions): GateBridge {
         session_id: opts.session_id,
         proposal,
         autoRepair: opts.autoRepair ?? false,
+        requireHolderProof: opts.requireHolderProof ?? false,
+        ...(opts.holder_proof === undefined ? {} : { holder_proof: opts.holder_proof }),
         ...(opts.llm === undefined ? {} : { llm: opts.llm }),
       });
       results.push(result);

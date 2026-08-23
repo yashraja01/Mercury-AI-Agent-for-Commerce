@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { type HolderProof, holderChallenge, newNonce, signValue } from "@mercury/core";
+import { readWallet } from "@mercury/seed";
 import { z } from "zod";
 
 /**
@@ -22,6 +24,34 @@ import { z } from "zod";
  */
 
 const BASE = (process.env["MERCURY_URL"] ?? "http://localhost:3000").replace(/\/+$/u, "");
+const WALLET = process.env["MERCURY_WALLET"] ?? "./buyer-wallet.json";
+
+/**
+ * The buyer's wallet.
+ *
+ * This server signs on behalf of the buyer, so it holds the delegated agent
+ * private keys -- the same asymmetry a real buyer agent would have. The
+ * merchant never sees them; it only ever checks a signature against the public
+ * key named inside the mandate the human signed.
+ */
+/**
+ * Prove we hold the mandate.
+ *
+ * Without this, a mandate id is a bearer token: anyone who learns one can spend
+ * it. The signature is over a fresh nonce and the current time, so it cannot be
+ * captured and reused.
+ */
+function proveHolder(mandateId: string): HolderProof {
+  const entry = readWallet(WALLET).find((a) => a.mandate_id === mandateId);
+  if (entry === undefined) {
+    throw new GatewayError(
+      `No key for ${mandateId} in ${WALLET}. Run \`npm run seed\` to mint a buyer wallet, ` +
+        "or point MERCURY_WALLET at yours.",
+    );
+  }
+  const body = { mandate_id: mandateId, nonce: newNonce(), issued_at: new Date().toISOString() };
+  return { ...body, signature: signValue(holderChallenge(body), entry.agent_private_key) };
+}
 
 class GatewayError extends Error {
   constructor(message: string) {
@@ -78,7 +108,9 @@ const server = new McpServer(
       "describe what you want, and the merchant's own agent proposes a cart that a deterministic " +
       "policy gate then prices and approves or refuses. A quote returns a single-use intent token; " +
       "`pay` redeems exactly one. If a quote comes back needing approval, hand the link to your " +
-      "human and stop -- do not try to route around it. All amounts are integer paise.",
+      "human and stop -- do not try to route around it. All amounts are integer paise. " +
+      "Every spending call is signed with the buyer's delegated agent key, so a mandate id alone " +
+      "buys nothing.",
   },
 );
 
@@ -198,12 +230,20 @@ server.registerTool(
     try {
       const result = await call<{ outcome: string; cart?: { intent_token_id: string } }>(
         "/api/agent/quote",
-        { method: "POST", body: JSON.stringify({ merchant_id, mandate_id, message }) },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            merchant_id,
+            mandate_id,
+            message,
+            holder_proof: proveHolder(mandate_id),
+          }),
+        },
       );
 
       const next =
         result.outcome === "ALLOW"
-          ? "Call `pay` with the order_id, intent_token_id and session_id to settle."
+          ? "Call `pay` with the order_id, intent_token_id, mandate_id and session_id to settle."
           : result.outcome === "ALLOW_WITH_STEPUP"
             ? "A human must approve this. Give them the approval_url and stop here."
             : "Refused. Read `rules` for the rule that failed, then quote something within it.";
@@ -228,6 +268,7 @@ server.registerTool(
     inputSchema: {
       order_id: z.string(),
       intent_token_id: z.string().describe("From the quote that authorised this cart."),
+      mandate_id: z.string().describe("The same mandate the quote drew down."),
       session_id: z
         .string()
         .optional()
@@ -237,11 +278,16 @@ server.registerTool(
     },
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  async ({ order_id, intent_token_id, session_id }) => {
+  async ({ order_id, intent_token_id, mandate_id, session_id }) => {
     try {
       return json(await call("/api/agent/pay", {
         method: "POST",
-        body: JSON.stringify({ order_id, intent_token_id, session_id }),
+        body: JSON.stringify({
+          order_id,
+          intent_token_id,
+          session_id,
+          holder_proof: proveHolder(mandate_id),
+        }),
       }));
     } catch (e) {
       return failure(e);

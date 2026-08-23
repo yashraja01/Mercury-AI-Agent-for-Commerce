@@ -25,6 +25,16 @@ export interface SeededPrincipal {
   public_key: string;
   /** Kept only so the demo can mint further mandates for the same principal. */
   private_key: string;
+  /**
+   * The delegated agent's keypair.
+   *
+   * The public half is named inside the signed mandate, so the human is
+   * authorising exactly this key. The private half is the buyer's wallet: it
+   * is what a caller signs a holder proof with, and it is the only reason a
+   * mandate id is not a bearer token.
+   */
+  agent_public_key: string;
+  agent_private_key: string;
   mandate: SignedReserveMandate;
 }
 
@@ -43,11 +53,14 @@ function window(days: number): { not_before: string; expires_at: string } {
 export function seedPrincipals(): SeededPrincipal[] {
   const household = generateKeyPair();
   const restaurant = generateKeyPair();
+  const householdAgent = generateKeyPair();
+  const restaurantAgent = generateKeyPair();
 
   const weekly: ReserveMandate = {
     mandate_id: "mnd_household_weekly",
     principal_id: "prn_household",
     agent_id: "agt_buyer_household",
+    agent_public_key: householdAgent.publicKey,
     vertical: "quick_commerce",
     reserved_paise: rupees(5_000),
     max_per_txn_paise: rupees(2_000),
@@ -67,6 +80,7 @@ export function seedPrincipals(): SeededPrincipal[] {
     mandate_id: "mnd_restaurant_restock",
     principal_id: "prn_restaurant",
     agent_id: "agt_buyer_restaurant",
+    agent_public_key: restaurantAgent.publicKey,
     vertical: "b2b_procurement",
     reserved_paise: rupees(300_000),
     max_per_txn_paise: rupees(150_000),
@@ -87,12 +101,16 @@ export function seedPrincipals(): SeededPrincipal[] {
       principal_id: "prn_household",
       public_key: household.publicKey,
       private_key: household.privateKey,
+      agent_public_key: householdAgent.publicKey,
+      agent_private_key: householdAgent.privateKey,
       mandate: sign(weekly, household.privateKey, household.publicKey),
     },
     {
       principal_id: "prn_restaurant",
       public_key: restaurant.publicKey,
       private_key: restaurant.privateKey,
+      agent_public_key: restaurantAgent.publicKey,
+      agent_private_key: restaurantAgent.privateKey,
       mandate: sign(procurement, restaurant.privateKey, restaurant.publicKey),
     },
   ];

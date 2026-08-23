@@ -31,6 +31,7 @@ import { priceFloor, quoteTotal, revenueTools, searchCatalog } from "./tools.js"
 /* ------------------------------------------------------------- fixtures --- */
 
 const KEYS = generateKeyPair();
+const AGENT_KEYS = generateKeyPair();
 
 const QUICK: MerchantProfile = {
   merchant_id: "mch_quick",
@@ -98,6 +99,7 @@ function mandateOf(over: Partial<ReserveMandate> = {}): ReserveMandate {
     mandate_id: "mnd_test",
     principal_id: "prn_test",
     agent_id: "agt_buyer",
+    agent_public_key: AGENT_KEYS.publicKey,
     vertical: "quick_commerce",
     reserved_paise: rupees(5_000),
     max_per_txn_paise: rupees(2_000),
@@ -459,6 +461,144 @@ describe("the Revenue Agent", () => {
 
     expect(result.rounds.length).toBe(0);
     expect(result.reply).toContain("do not stock");
+    h.store.close();
+  });
+});
+
+/* --------------------------------------------------------- revenue levers --- */
+
+describe("the revenue levers, through the gate", () => {
+  it("bulk tier lifts basket value and still passes Dwaar", async () => {
+    const h = harness(
+      BULK,
+      BULK_ITEMS,
+      mandateOf({
+        vertical: "b2b_procurement",
+        reserved_paise: rupees(300_000),
+        max_per_txn_paise: rupees(150_000),
+        requires_human_approval_above_paise: rupees(200_000),
+      }),
+    );
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_tier" });
+    const agent = new ScriptedRevenueAgent(h.ctx(BULK, bridge.submit), {});
+
+    const result = await agent.negotiate({
+      session_id: "ses_tier",
+      buyer_message: "I need 25 sacks of Sona Masoori rice",
+    });
+
+    expect(result.settled?.feedback.outcome).toBe("ALLOW");
+    expect(result.value?.levers_used).toContain("bulk_tier");
+    // A tier is a discount, so this basket is *cheaper* than the ordinary
+    // quote -- the uplift comes from volume, which the buyer chose.
+    expect(result.value?.final_paise).toBeGreaterThan(0);
+    expect(result.settled?.proposal.lines[0]?.qty).toBe(25);
+    h.store.close();
+  });
+
+  it("bulk tier never prices a line below the floor the gate enforces", async () => {
+    const h = harness(
+      BULK,
+      BULK_ITEMS,
+      mandateOf({
+        vertical: "b2b_procurement",
+        reserved_paise: rupees(300_000),
+        max_per_txn_paise: rupees(150_000),
+        requires_human_approval_above_paise: rupees(200_000),
+      }),
+    );
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_floor" });
+    const agent = new ScriptedRevenueAgent(h.ctx(BULK, bridge.submit), {});
+
+    const result = await agent.negotiate({
+      session_id: "ses_floor",
+      buyer_message: "50 sacks of rice please",
+    });
+
+    const rice = h.catalog.get("WS_RICE_25KG");
+    if (rice === undefined) throw new Error("unreachable");
+    // Deepest tier, and the gate still allowed it -- because the lever clamped.
+    expect(result.settled?.feedback.outcome).toBe("ALLOW");
+    expect(result.settled?.proposal.lines[0]?.offer_unit_paise).toBeGreaterThanOrEqual(
+      lowestLegalUnit(rice, BULK),
+    );
+    h.store.close();
+  });
+
+  it("bundle raises the basket when the buyer invites it", async () => {
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_bundle" });
+    const agent = new ScriptedRevenueAgent(h.ctx(QUICK, bridge.submit), {});
+
+    const plain = await new ScriptedRevenueAgent(
+      h.ctx(QUICK, async () => ({ outcome: "DENY", rule_ids: [], messages: [] })),
+      {},
+    ).negotiate({ session_id: "ses_x", buyer_message: "two bags of rice" });
+
+    const invited = await agent.negotiate({
+      session_id: "ses_bundle",
+      buyer_message: "two bags of rice, and stock me up for the week",
+    });
+
+    expect(invited.value?.levers_used).toContain("bundle");
+    expect(invited.settled?.feedback.outcome).toBe("ALLOW");
+    // More lines than the plain request produced, and a real uplift.
+    expect(invited.settled?.proposal.lines.length).toBeGreaterThan(
+      plain.rounds[0]?.proposal.lines.length ?? 0,
+    );
+    expect(invited.value?.uplift_paise ?? 0).toBeGreaterThan(0);
+    h.store.close();
+  });
+
+  it("does not pad a basket the buyer did not open up", async () => {
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_nopad" });
+    const agent = new ScriptedRevenueAgent(h.ctx(QUICK, bridge.submit), {});
+
+    const result = await agent.negotiate({
+      session_id: "ses_nopad",
+      buyer_message: "just two bags of rice",
+    });
+
+    // The add-on is offered in words, never added to the cart.
+    expect(result.value?.levers_used ?? []).not.toContain("bundle");
+    expect(result.settled?.proposal.lines.map((l) => l.sku)).toEqual(["QC_RICE_5KG"]);
+    expect(result.suggestion).toBeDefined();
+    expect(result.reply).toContain("you could add");
+    h.store.close();
+  });
+
+  it("substitutes a short line rather than proposing a cart that cannot ship", async () => {
+    const scarce: CatalogItem[] = [
+      item({ sku: "QC_GHEE_1L", title: "Pure Cow Ghee 1L", list_paise: rupees(900), cost_paise: rupees(700), stock: 1 }),
+      item({ sku: "QC_RICE_5KG" }),
+    ];
+    const h = harness(QUICK, scarce);
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_sub" });
+    const agent = new ScriptedRevenueAgent(h.ctx(QUICK, bridge.submit), {
+      want: [{ sku: "QC_GHEE_1L", qty: 3 }],
+    });
+
+    const result = await agent.negotiate({ session_id: "ses_sub", buyer_message: "three ghee" });
+
+    expect(result.value?.levers_used).toContain("substitute");
+    expect(result.substitutions?.[0]?.from_sku).toBe("QC_GHEE_1L");
+    expect(result.settled?.proposal.lines.map((l) => l.sku)).not.toContain("QC_GHEE_1L");
+    h.store.close();
+  });
+
+  it("records what the levers were worth, for the ledger to carry", async () => {
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_value" });
+    const agent = new ScriptedRevenueAgent(h.ctx(QUICK, bridge.submit), {
+      want: [{ sku: "QC_RICE_5KG", qty: 2 }],
+    });
+
+    const result = await agent.negotiate({ session_id: "ses_value", buyer_message: "rice" });
+
+    expect(result.value).toBeDefined();
+    expect(result.value?.baseline_paise).toBeGreaterThan(0);
+    expect(result.value?.final_paise).toBe(result.settled?.feedback.computed_total_paise);
     h.store.close();
   });
 });

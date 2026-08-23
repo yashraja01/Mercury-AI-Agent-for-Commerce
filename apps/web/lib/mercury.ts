@@ -1,9 +1,10 @@
 import "server-only";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Engine } from "@mercury/agent";
 import { hashValue } from "@mercury/core";
 import { FixtureRail, LiveRail, type RazorpayPort } from "@mercury/rail";
-import { ALL_ITEMS, ALL_MERCHANTS, seedPrincipals } from "@mercury/seed";
+import { ALL_ITEMS, ALL_MERCHANTS, seedPrincipals, writeWallet } from "@mercury/seed";
 import { Sakshi } from "@mercury/sakshi";
 import { Store } from "@mercury/store";
 
@@ -33,7 +34,32 @@ declare global {
   var __mercury__: Mercury | undefined;
 }
 
-const DB_PATH = process.env["MERCURY_DB"] ?? "./mercury.db";
+/**
+ * Anchor relative paths to the repo root, not to the process cwd.
+ *
+ * `next dev` runs with cwd = apps/web, so a bare "./mercury.db" resolved there
+ * and the app quietly kept a *second* database, separate from the one
+ * `npm run seed`, `npm run demo` and `npm run verify` were using. Everything
+ * appeared to work; the two stores simply never agreed. Anchoring here is the
+ * fix, and it is why the path constants are computed rather than literal.
+ */
+function repoRoot(): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i += 1) {
+    if (existsSync(join(dir, "tsconfig.base.json"))) return dir;
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return process.cwd();
+}
+
+function anchored(value: string): string {
+  return isAbsolute(value) ? value : resolve(repoRoot(), value);
+}
+
+const DB_PATH = anchored(process.env["MERCURY_DB"] ?? "./mercury.db");
+const WALLET_PATH = anchored(process.env["MERCURY_WALLET"] ?? "./buyer-wallet.json");
 
 function build(): Mercury {
   const store = Store.open(DB_PATH);
@@ -70,7 +96,12 @@ export function seed(m: Mercury = mercury()): void {
   for (const merchant of ALL_MERCHANTS) m.store.putMerchant(merchant);
   for (const item of ALL_ITEMS) m.store.putItem(item);
 
-  for (const p of seedPrincipals()) {
+  const principals = seedPrincipals();
+  // Seeding mints fresh delegated keys, so any wallet a buyer was holding is
+  // now stale. Rewrite it here or Reset silently breaks every signed request.
+  writeWallet(principals, WALLET_PATH);
+
+  for (const p of principals) {
     m.store.putPrincipal(p.principal_id, p.public_key);
     m.store.putMandate(p.mandate);
     m.sakshi.append({

@@ -6,7 +6,14 @@ import {
   gateVia,
   personaFor,
 } from "@mercury/agent";
-import { type Proposal, type RuleEval, newId } from "@mercury/core";
+import {
+  type HolderProof,
+  type Proposal,
+  type RuleEval,
+  holderChallenge,
+  newId,
+  verifyValue,
+} from "@mercury/core";
 import { TEST_VPA_FAILURE, TEST_VPA_SUCCESS } from "@mercury/rail";
 import { mercury } from "./mercury";
 import { envelopeView } from "./run";
@@ -71,6 +78,12 @@ export async function quote(input: {
   mandate_id: string;
   message: string;
   mode?: "scripted" | "llm";
+  /**
+   * Proof the caller holds this mandate. Required unless `internal` is set,
+   * which only Mission Control does -- there the caller *is* the merchant.
+   */
+  holder_proof?: HolderProof;
+  internal?: boolean;
 }): Promise<QuoteResult> {
   const m = mercury();
 
@@ -87,6 +100,8 @@ export async function quote(input: {
   const bridge = gateVia(m.engine, {
     mandate_id: input.mandate_id,
     session_id: sessionId,
+    requireHolderProof: input.internal !== true,
+    ...(input.holder_proof === undefined ? {} : { holder_proof: input.holder_proof }),
   });
 
   let lastRules: RuleEval[] = [];
@@ -179,6 +194,9 @@ export interface PayResult {
 export async function pay(input: {
   order_id: string;
   intent_token_id: string;
+  /** Proof the caller holds the mandate this order draws down. */
+  holder_proof?: HolderProof;
+  internal?: boolean;
   /**
    * The session the quote ran under. Threading it through means the whole
    * transaction -- offer, decision, order, capture -- lands in the ledger under
@@ -192,6 +210,12 @@ export async function pay(input: {
   const m = mercury();
   const order = m.store.getOrder(input.order_id);
   if (order === undefined) throw new TransactError(`no such order: ${input.order_id}`, 404);
+
+  // Redeeming a token moves money, so it needs the same proof as quoting did.
+  if (input.internal !== true) {
+    const check = verifyHolder(order.mandate_id, input.holder_proof);
+    if (!check.ok) throw new TransactError(check.reason, 401);
+  }
 
   const sessionId = input.session_id ?? newId("session");
   const fixture = m.fixture;
@@ -240,4 +264,122 @@ export async function pay(input: {
     default:
       return { status: "rejected", reason: outcome.reason, ...tail };
   }
+}
+
+/**
+ * Verify a holder proof outside Dwaar, for paths that do not run the gate.
+ *
+ * Quoting goes through `evaluate()` and gets `HOLDER.*` rules in its decision.
+ * Paying does not re-run the gate -- the intent token already carries the
+ * authorisation -- so the same check has to happen here, against the same key
+ * from inside the same signed mandate.
+ */
+export function verifyHolder(
+  mandateId: string,
+  proof: HolderProof | undefined,
+  skewMs = 120_000,
+): { ok: true } | { ok: false; reason: string } {
+  const m = mercury();
+  const signed = m.store.getMandate(mandateId);
+  if (signed === undefined) return { ok: false, reason: `no such mandate: ${mandateId}` };
+  if (proof === undefined) return { ok: false, reason: "HOLDER.PROOF_MISSING" };
+  if (proof.mandate_id !== mandateId) {
+    return { ok: false, reason: `HOLDER.SIGNATURE: proof is for ${proof.mandate_id}` };
+  }
+
+  const issued = Date.parse(proof.issued_at);
+  if (Number.isNaN(issued) || Math.abs(Date.now() - issued) > skewMs) {
+    return { ok: false, reason: "HOLDER.STALE" };
+  }
+  if (!m.store.useHolderNonce(proof.nonce)) {
+    return { ok: false, reason: "HOLDER.NONCE_REPLAY" };
+  }
+  if (!verifyValue(holderChallenge(proof), proof.signature, signed.mandate.agent_public_key)) {
+    return { ok: false, reason: "HOLDER.SIGNATURE" };
+  }
+  return { ok: true };
+}
+
+/* ------------------------------------------------------------ compensation */
+
+export interface CompensationResult {
+  status: "refunded" | "rejected";
+  refund_id?: string;
+  amount_paise?: number;
+  reason: string;
+  envelope: EnvelopeView | undefined;
+  ledger_seq: number;
+}
+
+/**
+ * F3's second half: money took, goods cannot ship.
+ *
+ * Stock is reserved before the order is created, so the ordinary inventory race
+ * is settled at reservation time and the loser never pays. This is the harder
+ * case -- the warehouse discovers after capture that the unit is gone -- and it
+ * is a merchant-side report, not something a buyer can claim.
+ *
+ * The recovery has to leave the principal exactly where they started: refund
+ * the payment, put the stock back, and restore the envelope. Refunding without
+ * restoring the envelope would silently burn the buyer's budget for goods they
+ * never received, which is a quieter failure than not refunding at all.
+ */
+export async function reportUndeliverable(input: {
+  order_id: string;
+  reason: string;
+}): Promise<CompensationResult> {
+  const m = mercury();
+  const order = m.store.getOrder(input.order_id);
+  if (order === undefined) throw new TransactError(`no such order: ${input.order_id}`, 404);
+
+  if (order.payment_id === null || order.status !== "paid") {
+    throw new TransactError(
+      `order ${input.order_id} is ${order.status}; there is nothing captured to refund`,
+      409,
+    );
+  }
+
+  // Put back exactly what this order took out.
+  const cart = m.store.getOrder(input.order_id);
+  const lines = cartLinesOf(cart?.cart_hash ?? "");
+
+  const outcome = await m.engine.compensate({
+    order_id: input.order_id,
+    payment_id: order.payment_id,
+    session_id: newId("session"),
+    reason: input.reason,
+    restore: lines,
+  });
+
+  const tail = { envelope: envelopeView(order.mandate_id), ledger_seq: m.sakshi.count() };
+  if (outcome.kind === "REFUNDED") {
+    return {
+      status: "refunded",
+      refund_id: outcome.refund_id,
+      amount_paise: order.amount,
+      reason: input.reason,
+      ...tail,
+    };
+  }
+  return {
+    status: "rejected",
+    reason: outcome.kind === "REJECTED" ? outcome.reason : `unexpected outcome ${outcome.kind}`,
+    ...tail,
+  };
+}
+
+/**
+ * The lines an order reserved, recovered from the ledger.
+ *
+ * The orders table stores a cart hash rather than the cart, so the authoritative
+ * record of what was reserved is the ORDER_CREATED entry Sakshi already holds --
+ * which is the ledger being useful for something other than proof.
+ */
+function cartLinesOf(cartHash: string): { sku: string; qty: number }[] {
+  if (cartHash === "") return [];
+  const entry = mercury()
+    .sakshi.byEventType("ORDER_CREATED")
+    .find((e) => e.cart_mandate_hash === cartHash);
+  const lines = (entry?.detail as { lines?: { sku: string; qty: number }[] } | undefined)?.lines;
+  return lines ?? [];
 }

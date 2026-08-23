@@ -133,7 +133,12 @@ head("4. Pay — a single-use token, and a replay that must fail");
 if (q.cart !== undefined) {
   const paid = await tool<{ status: string; payment_id?: string; envelope: { remaining_paise: number } }>(
     "pay",
-    { order_id: q.cart.order_id, intent_token_id: q.cart.intent_token_id, session_id: q.session_id },
+    {
+      order_id: q.cart.order_id,
+      intent_token_id: q.cart.intent_token_id,
+      mandate_id: "mnd_household_weekly",
+      session_id: q.session_id,
+    },
   );
   console.log(`  pay        ${paid.status}  ${paid.payment_id ?? ""}`);
   console.log(`  envelope   ${rupees(paid.envelope.remaining_paise)} left`);
@@ -141,6 +146,7 @@ if (q.cart !== undefined) {
   const replay = await tool<{ status: string; reason?: string }>("pay", {
     order_id: q.cart.order_id,
     intent_token_id: q.cart.intent_token_id,
+    mandate_id: "mnd_household_weekly",
     session_id: q.session_id,
   });
   console.log(`  replay     ${replay.status} (${replay.reason ?? ""}) — no duplicate order`);

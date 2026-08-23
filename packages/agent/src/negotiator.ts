@@ -1,4 +1,5 @@
 import type { CatalogItem, MerchantProfile, Proposal, RuleId } from "@mercury/core";
+import type { BasketValue, BundleSuggestion, Substitution } from "./levers.js";
 
 /**
  * The negotiator port.
@@ -45,6 +46,16 @@ export interface NegotiationResult {
   rounds: NegotiationRound[];
   /** The last offer that Dwaar accepted, if any. */
   settled?: NegotiationRound;
+  /**
+   * What the revenue levers were worth: the basket the buyer asked for versus
+   * the basket the gate approved. The only honest measure of whether the
+   * Revenue Agent earned its place, and it goes into the ledger.
+   */
+  value?: BasketValue;
+  /** An add-on the buyer was offered but has not accepted. Never in the cart. */
+  suggestion?: BundleSuggestion;
+  /** Lines swapped because the requested SKU could not be filled. */
+  substitutions?: Substitution[];
   /** Provenance for the Sakshi ledger. Absent for the scripted agent. */
   llm?: {
     model: string;

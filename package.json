@@ -12,8 +12,8 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "tsc --build && npm run build -w @mercury/web",
-    "typecheck": "tsc --build --force",
+    "build": "tsc --build && tsc --noEmit -p scripts/tsconfig.json && npm run build -w @mercury/web",
+    "typecheck": "tsc --build --force && tsc --noEmit -p scripts/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "tsx scripts/verify-chain.ts",

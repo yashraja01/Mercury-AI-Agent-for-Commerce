@@ -17,7 +17,8 @@ export type ScenarioId =
   | "stepup"
   | "breach"
   | "bulk"
-  | "decline";
+  | "decline"
+  | "oversold";
 
 export interface Scenario {
   id: ScenarioId;
@@ -30,8 +31,10 @@ export interface Scenario {
   scripted: ScriptedOptions;
   /** Fail the payment at the rail, to exercise the bounded-retry path. */
   failPayment?: boolean;
+  /** Report the order undeliverable after capture, to exercise the refund path. */
+  undeliverable?: boolean;
   /** The failure-audit row this scenario demonstrates, if any. */
-  failure?: "F1" | "F2" | "F6";
+  failure?: "F1" | "F2" | "F3" | "F6";
 }
 
 const QUICK = { merchant_id: "mch_quick", mandate_id: "mnd_household_weekly" };
@@ -138,6 +141,17 @@ export const SCENARIOS: Scenario[] = [
     scripted: { want: [{ sku: "QC_RICE_5KG", qty: 1 }] },
     failPayment: true,
     failure: "F2",
+  },
+  {
+    id: "oversold",
+    label: "Captured, then unshippable",
+    premise:
+      "The gate allowed it and Razorpay captured it -- and then the warehouse finds the stock is gone. An automatic refund puts the money back, the stock back, and the envelope back, so the principal is exactly where they started.",
+    ...QUICK,
+    buyer: "One tin of ghee, please.",
+    scripted: { want: [{ sku: "QC_GHEE_1L", qty: 1 }] },
+    undeliverable: true,
+    failure: "F3",
   },
 ];
 

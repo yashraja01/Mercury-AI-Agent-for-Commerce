@@ -128,6 +128,7 @@ describe("envelope drawdown -- the Reserve Pay model", () => {
       mandate_id: "mnd_1",
       principal_id: "prn_alice",
       agent_id: "agt_1",
+      agent_public_key: "agent-key-placeholder",
       vertical: "quick_commerce" as const,
       reserved_paise: paise(200_000),
       max_per_txn_paise: paise(100_000),

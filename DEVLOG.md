@@ -25,6 +25,7 @@
 | M4 | `agent` + two personas | ☑ done | negotiator port, shared strict tools, seed + demo |
 | M5 | Mission Control UI | ☑ done | Negotiation Theatre, Dwaar panel, Sakshi explorer, SSE, freeze |
 | M6 | MCP server + Agent Card + feed | ☑ done | external Claude buys end-to-end; `npm run mcp:smoke` |
+| M6.5 | Levers, proof-of-holder, compensation | ☑ done | Goal 1 mechanised; buyer API signed; F2/F3 wired |
 | M7 | Chaos Console -- verify F1--F7 | ☐ todo | all failure-audit rows green |
 | M8 | Hardening | ☐ todo | LiveRail on test keys, Route (B2B), feed conformance, deploy, video |
 
@@ -51,6 +52,8 @@ Blocked: —
 | D15 | 2026-08-23 | Tailwind v4 with hand-built components, not shadcn/ui | Mission Control is about eight distinct elements. shadcn adds a generator, a `components/ui` tree and Radix for controls we do not need, and its defaults are exactly the look the UI should not have. CONTEXT updated | shadcn/ui (as originally planned in the stack table) |
 | D16 | 2026-08-23 | The MCP server is a **thin HTTP client of the gateway**, not a second copy of the engine | Keeps D5's single execution point literally true: one store, one ledger, one rail instance. A purchase made from Claude Desktop therefore appears live in Mission Control, and there is exactly one place where money moves | Giving the MCP process its own Store/Engine (two rails, two in-memory order sets, a demo that silently diverges from what the browser shows) |
 | D17 | 2026-08-23 | No buyer-facing surface accepts a price -- no total, no unit price, no discount | An MCP tool taking `total_paise` from its caller puts an LLM back in the money path, which is the exact anti-pattern the architecture exists to prevent. The buyer sends a sentence; the merchant's agent proposes; Dwaar prices | A conventional `create_cart(items, total)` tool shape (familiar, and quietly fatal) |
+| D18 | 2026-08-23 | The delegated agent's **public key lives inside the signed mandate** | The human is not authorising "an agent", they are authorising exactly one key. It makes proof-of-holder verifiable by anyone holding the mandate -- no registry lookup, no shared secret, no trust in our own database -- and it means a stolen mandate id buys nothing | A separate agent-key registry (one more thing to keep in sync, and it moves trust into our DB); signing with the principal's own key (that is the human's key, not the agent's) |
+| D19 | 2026-08-23 | `bundle` needs the buyer's invitation; `bulk_tier` and `substitute` do not | A tier and a substitution answer what the buyer asked for. A bundle changes *what is in the cart*, and an agent that appends a line to every basket is padding -- which the persona prompt already forbids, so the code should too | Always bundling (higher AOV, bad faith); never bundling (Goal 1 stays unimplemented) |
 
 ## Failure-recovery audit
 
@@ -61,14 +64,75 @@ Blocked: —
 | # | Failure | Injection | Expected recovery | Sakshi events | Status |
 |---|---|---|---|---|---|
 | F1 | Parameter drift | Adversarial buyer pushes agent below margin floor | Hard DENY, clamp to floor, agent re-quotes. **No Razorpay call made** | `DRIFT_BLOCKED`, `REPRICED` | ☑ |
-| F2 | Payment decline | `failure@razorpay` | <=2 bounded retries re-checked against remaining envelope, then UPI Payment Link fallback | `PAYMENT_FAILED`, `RETRY_BOUNDED`, `STEPUP_ISSUED` | ☐ |
-| F3 | Inventory race | Two agents, last unit, concurrent | `BEGIN IMMEDIATE` + conditional UPDATE; loser denied. If captured -> automatic refund | `INVENTORY_CONFLICT`, `AUTO_REFUND_ISSUED` | ☐ |
+| F2 | Payment decline | `failure@razorpay` | <=2 bounded retries re-checked against remaining envelope, then UPI Payment Link fallback | `PAYMENT_FAILED`, `RETRY_BOUNDED`, `STEPUP_ISSUED` | ☑ |
+| F3 | Inventory race | Two agents, last unit, concurrent | `BEGIN IMMEDIATE` + conditional UPDATE; loser denied. If captured -> automatic refund | `INVENTORY_CONFLICT`, `AUTO_REFUND_ISSUED` | ☑ |
 | F4 | Forged webhook | Bad `X-Razorpay-Signature` | 400; **order state unchanged**; genuine webhook then processes | `WEBHOOK_REJECTED` | ☐ |
 | F5 | Out-of-order / duplicate webhook | `captured` before `authorized`, then replay | Dedupe on `x-razorpay-event-id`; monotonic FSM converges; replay is a no-op | `WEBHOOK_DEDUPED` | ☐ |
 | F6 | Mandate breach | Purchase exceeding remaining envelope | DENY with exact observed/limit paise. **Zero Razorpay calls** | `MANDATE_BREACH_BLOCKED` | ☑ |
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+
+### 2026-08-23 — M6.5 levers, proof-of-holder, compensation
+
+Closing the three claims the M6 review found were asserted but not implemented.
+
+**Revenue levers (Goal 1).** `packages/agent/src/levers.ts`: `bulk_tier` (a
+5/10/25/50 quantity ladder), `bundle` (an add-on from a different category than
+the basket anchor, capped at 40% of basket value), `substitute` (nearest stocked
+equivalent, same category). `MerchantProfile.levers` is now read rather than
+merely declared — it was previously published in the feed and used by nobody.
+- Every lever clamps to `lowestLegalUnit` itself, so it cannot hand the gate a
+  price the gate would have to catch. A property test asserts this over 500
+  random quantity/margin combinations.
+- D19: `bundle` returns a *suggestion* unless the buyer's message invites it.
+  A tier answers what was asked for; a bundle changes what is in the cart.
+- Uplift is measured, not asserted: `BasketValue` records asked-for versus
+  approved, and rides along with the negotiation result.
+
+**Proof of holder (D18).** The mandate now names the delegated agent's Ed25519
+public key *inside the signed artifact*. A caller proves it holds the mandate by
+signing `{mandate_id, nonce, issued_at}`; Dwaar checks it as four new rules —
+`HOLDER.PROOF_MISSING`, `HOLDER.SIGNATURE`, `HOLDER.NONCE_REPLAY`,
+`HOLDER.STALE` — *before* it looks at the cart, so a caller who cannot prove
+itself never learns whether its basket was affordable.
+- Before this, a mandate id was a bearer token: `/api/agent/quote` would spend
+  against any id it was handed. It now returns 401.
+- Nonces burn in SQLite via a primary-key conflict, which is the only way to
+  make "seen it before" atomic under two concurrent replays.
+- `npm run seed` mints `buyer-wallet.json` (git-ignored) — the buyer's keys,
+  which Mercury verifies against but never holds.
+
+**Compensation (F3's second half).** `Engine.compensate` was dead code. It is
+now reachable through `POST /api/ops/undeliverable` and a Mission Control
+scenario: gate allows, Razorpay captures, the warehouse finds the stock gone,
+and an automatic refund puts the money, the stock and the envelope back.
+`ORDER_CREATED` now records its cart lines so compensation knows what to restore.
+Deliberately under `/api/ops`, not `/api/agent`: this is the merchant's own
+admission, not something a buyer can assert.
+
+**Three bugs found while doing the above:**
+- **Two databases.** `next dev` runs with cwd `apps/web`, so `./mercury.db`
+  resolved there — the app had been keeping a second store since M5, separate
+  from the one `seed`, `demo` and `verify` used. Everything appeared to work;
+  the two simply never agreed. Paths are now anchored to the repo root.
+- **Reset invalidated the wallet.** Re-seeding mints fresh agent keys, so
+  Mission Control's Reset silently broke every signed request. Both seed paths
+  now write the wallet through one function.
+- **`scripts/` was never typechecked.** It is not in the composite project
+  graph, so `tsc --build` never looked at it and a syntactically broken
+  `seed.ts` shipped past a green build. `npm run build` and `npm run typecheck`
+  now include `tsc --noEmit -p scripts/tsconfig.json`, which immediately found a
+  second latent bug (`demo.ts` reading `verdict.brokenAt`, a field that does not
+  exist).
+- **A literal backspace in a regex.** A Python-driven edit turned `` into
+  0x08, so the bundle-invitation pattern never matched. Repo scanned for others;
+  none.
+
+**Coverage.** 176 tests, up from 137, zero regressions. New: 18 lever tests,
+10 holder-proof tests, 5 engine settlement tests covering F2 (bounded retry,
+envelope untouched on a payment that never captured) and F3 (refund restores
+money, stock and envelope; the race itself settles before anyone pays).
 
 ### 2026-08-23 — M6 MCP server, Agent Card, product feed
 - `apps/mcp`: six stdio tools — `list_merchants`, `search_catalog`,

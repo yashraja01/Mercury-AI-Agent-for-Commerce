@@ -101,6 +101,11 @@ export class Store {
         payment_id TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS holder_nonces (
+        nonce   TEXT PRIMARY KEY,
+        seen_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS seen_webhook_events (
         event_id TEXT PRIMARY KEY,
         seen_at  TEXT NOT NULL
@@ -349,6 +354,33 @@ export class Store {
       this.#db.exec("ROLLBACK");
       throw e;
     }
+  }
+
+  /* --------------------------------------------------------- holder proofs */
+
+  /**
+   * Burn a proof nonce.
+   *
+   * Returns false if it was already used. The INSERT is the check: a primary
+   * key conflict is the only reliable way to make "seen it before" atomic under
+   * two concurrent callers replaying the same proof.
+   */
+  useHolderNonce(nonce: string, at: string = new Date().toISOString()): boolean {
+    try {
+      this.#db
+        .prepare("INSERT INTO holder_nonces (nonce, seen_at) VALUES (?, ?)")
+        .run(nonce, at);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  seenHolderNonces(): Set<string> {
+    const rows = this.#db.prepare("SELECT nonce FROM holder_nonces").all() as unknown as {
+      nonce: string;
+    }[];
+    return new Set(rows.map((r) => r.nonce));
   }
 
   /* ---------------------------------------------------------------- orders */

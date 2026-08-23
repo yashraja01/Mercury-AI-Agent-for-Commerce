@@ -72,6 +72,16 @@ export const zReserveMandate = z.object({
   mandate_id: z.string().min(1),
   principal_id: z.string().min(1),
   agent_id: z.string().min(1),
+  /**
+   * base64url raw Ed25519 public key of the agent this mandate delegates to.
+   *
+   * It lives *inside* the signed artifact deliberately: the human is not
+   * authorising "an agent", they are authorising exactly this key. A caller
+   * proves it holds the mandate by signing a challenge with the matching
+   * private key, and that proof is verifiable by anyone holding the mandate --
+   * no registry lookup, no shared secret, no trust in our own database.
+   */
+  agent_public_key: z.string().min(1),
   vertical: zVertical,
 
   /** Total reserved for the life of the envelope. */
@@ -158,6 +168,37 @@ export const zIntentToken = z.object({
 });
 export type IntentToken = z.infer<typeof zIntentToken>;
 
+/* ------------------------------------------------------------- holder proof */
+
+/**
+ * Proof that the caller holds the mandate it is spending against.
+ *
+ * A signed mandate proves the *envelope* is genuine. It does not prove the
+ * caller is the agent the envelope was issued to -- without this, a mandate id
+ * is a bearer token, and anyone who learns one can spend it.
+ *
+ * The signature covers the canonical JSON of {mandate_id, nonce, issued_at},
+ * made with the private key matching `agent_public_key` in the mandate itself.
+ */
+export const zHolderProof = z.object({
+  mandate_id: z.string().min(1),
+  /** Single-use. A replayed nonce is refused even with a valid signature. */
+  nonce: z.string().min(8),
+  issued_at: zIso,
+  /** base64url detached signature over canonicalJson({mandate_id, nonce, issued_at}). */
+  signature: z.string().min(1),
+});
+export type HolderProof = z.infer<typeof zHolderProof>;
+
+/** The bytes a holder proof signs. Kept here so both sides derive it identically. */
+export function holderChallenge(proof: {
+  mandate_id: string;
+  nonce: string;
+  issued_at: string;
+}): { mandate_id: string; nonce: string; issued_at: string } {
+  return { mandate_id: proof.mandate_id, nonce: proof.nonce, issued_at: proof.issued_at };
+}
+
 /* -------------------------------------------------------------- agent proposal */
 
 /**
@@ -210,6 +251,14 @@ export const RULE_IDS = [
   "DRIFT.AMOUNT_MISMATCH",
   /** Intent token already spent. */
   "TOKEN.REPLAY",
+  /** Caller did not prove it holds the mandate it is spending. */
+  "HOLDER.PROOF_MISSING",
+  /** Proof does not verify against the agent key named in the signed mandate. */
+  "HOLDER.SIGNATURE",
+  /** Proof nonce has been used before. */
+  "HOLDER.NONCE_REPLAY",
+  /** Proof timestamp is outside the accepted clock skew. */
+  "HOLDER.STALE",
 ] as const;
 export const zRuleId = z.enum(RULE_IDS);
 export type RuleId = z.infer<typeof zRuleId>;

@@ -2,7 +2,7 @@ import { rmSync } from "node:fs";
 import { Sakshi } from "@mercury/sakshi";
 import { Store } from "@mercury/store";
 import { formatINR, hashValue, paise } from "@mercury/core";
-import { ALL_ITEMS, ALL_MERCHANTS, seedPrincipals } from "@mercury/seed";
+import { ALL_ITEMS, ALL_MERCHANTS, seedPrincipals, writeWallet } from "@mercury/seed";
 
 /**
  * Seed a fresh Mercury database.
@@ -15,6 +15,7 @@ import { ALL_ITEMS, ALL_MERCHANTS, seedPrincipals } from "@mercury/seed";
  */
 
 const dbPath = process.env["MERCURY_DB"] ?? "./mercury.db";
+const WALLET_PATH = process.env["MERCURY_WALLET"] ?? "./buyer-wallet.json";
 const keep = process.argv.includes("--keep");
 
 if (!keep) {
@@ -58,6 +59,9 @@ for (const p of principals) {
 
 store.setFrozen(false);
 
+/* Mint the buyer's wallet alongside the mandates that name its keys. */
+writeWallet(principals, WALLET_PATH);
+
 console.log(`seeded ${dbPath}`);
 console.log(`  merchants  ${ALL_MERCHANTS.map((m) => m.merchant_id).join(", ")}`);
 console.log(`  catalogue  ${ALL_ITEMS.length} SKUs`);
@@ -69,6 +73,7 @@ for (const p of principals) {
   );
 }
 console.log(`  ledger     ${sakshi.count()} entries, tip ${sakshi.tipHash().slice(0, 12)}`);
+console.log(`  wallet     ${WALLET_PATH} (buyer agent keys -- git-ignored)`);
 
 sakshi.close();
 store.close();

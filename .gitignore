@@ -9,3 +9,6 @@ dist/
 .next/
 coverage/
 .DS_Store
+
+# Demo buyer agent keys, written by `npm run seed`.
+buyer-wallet.json

@@ -1,5 +1,6 @@
 import {
   type Decision,
+  type HolderProof,
   type IntentToken,
   type Paise,
   type PricedCart,
@@ -49,6 +50,13 @@ export interface ProposeInput {
   mandate_id: string;
   proposal: Proposal;
   session_id: string;
+  /**
+   * Proof that the caller holds this mandate. Required on every buyer-facing
+   * path; the merchant's own console omits it and sets `requireHolderProof`
+   * false, so the exemption is a visible argument rather than an implied one.
+   */
+  holder_proof?: HolderProof;
+  requireHolderProof?: boolean;
   /** Attempt repair-and-retry once if the gate denies on a repairable rule. */
   autoRepair?: boolean;
   llm?: { model: string; effort: string; input_hash: string; output_hash: string };
@@ -162,6 +170,9 @@ export class Engine {
       now: this.#now(),
       frozen: this.#store.isFrozen(),
       spent_token_ids: this.#store.spentTokenIds(),
+      require_holder_proof: input.requireHolderProof ?? false,
+      ...(input.holder_proof === undefined ? {} : { holder_proof: input.holder_proof }),
+      seen_holder_nonces: this.#store.seenHolderNonces(),
     });
 
     this.#log("OFFER_PROPOSED", {
@@ -241,6 +252,13 @@ export class Engine {
       return { kind: "DENIED", decision, rule_id: rule };
     }
 
+    /* The proof was accepted, so burn its nonce. Deliberately after the
+     * decision: a proof that failed for some other reason must not consume the
+     * nonce it would need to retry with. */
+    if (input.requireHolderProof === true && input.holder_proof !== undefined) {
+      this.#store.useHolderNonce(input.holder_proof.nonce);
+    }
+
     /* Allowed. Reserve stock before anything irreversible happens. */
     const cart = decision.cart;
     const reserved: { sku: string; qty: number }[] = [];
@@ -312,7 +330,13 @@ export class Engine {
       cart_mandate_hash: hash,
       envelope: this.#envelope(input.mandate_id),
       razorpay: { order_id: order.id },
-      detail: { amount_paise: decision.computed_paise, receipt: order.receipt },
+      detail: {
+        amount_paise: decision.computed_paise,
+        receipt: order.receipt,
+        // Recorded so a later compensation knows exactly what stock to put
+        // back. The orders table keeps only a hash of the cart.
+        lines: cart.lines.map((l) => ({ sku: l.sku, qty: l.qty })),
+      },
     });
 
     if (decision.outcome === "ALLOW_WITH_STEPUP") {

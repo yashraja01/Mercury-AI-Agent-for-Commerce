@@ -10,6 +10,7 @@ import {
 import { type Proposal, newId } from "@mercury/core";
 import { TEST_VPA_FAILURE, TEST_VPA_SUCCESS } from "@mercury/rail";
 import { mercury } from "./mercury";
+import { reportUndeliverable } from "./transact";
 import type { EnvelopeView, TheatreEvent } from "./types";
 import type { Scenario } from "./scenarios";
 
@@ -60,9 +61,12 @@ export async function runScenario(
 
   const sessionId = newId("session");
   const catalog = m.store.catalogFor(profile.merchant_id);
+  // Mission Control is the merchant's own console: the caller here is the
+  // merchant, not a delegated agent, so there is no holder to prove.
   const bridge = gateVia(m.engine, {
     mandate_id: scenario.mandate_id,
     session_id: sessionId,
+    requireHolderProof: false,
   });
 
   await emit({ type: "buyer", text: scenario.buyer });
@@ -147,6 +151,30 @@ export async function runScenario(
     });
   } else if (accepted !== undefined && accepted.kind === "AUTHORISED") {
     await settle(scenario, accepted.order_id, accepted.token.token_id, sessionId, emit);
+
+    if (scenario.undeliverable === true) {
+      await emit({
+        type: "note",
+        text: "Warehouse reports the stock is gone. The money has already moved.",
+      });
+      const refund = await reportUndeliverable({
+        order_id: accepted.order_id,
+        reason: "stock unavailable after capture",
+      });
+      await emit({
+        type: "payment",
+        status: "fallback",
+        attempt: 0,
+        detail:
+          refund.status === "refunded"
+            ? `refunded ${refund.refund_id ?? ""} — stock released and envelope restored`
+            : `compensation rejected: ${refund.reason}`,
+      });
+      await emit({
+        type: "note",
+        text: "The principal is exactly where they started: money back, budget back.",
+      });
+    }
   }
 
   await emit({

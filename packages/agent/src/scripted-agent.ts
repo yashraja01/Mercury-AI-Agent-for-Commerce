@@ -1,5 +1,13 @@
-import type { Proposal, RuleId } from "@mercury/core";
-import { formatINR, paise } from "@mercury/core";
+import type { Lever, Paise, Proposal, RuleId } from "@mercury/core";
+import { formatINR, mulP, paise, sumP } from "@mercury/core";
+import {
+  type BundleSuggestion,
+  type Substitution,
+  basketValue,
+  bulkTierUnit,
+  bundleAddOn,
+  substituteFor,
+} from "./levers.js";
 import type {
   Negotiator,
   NegotiationResult,
@@ -183,6 +191,31 @@ const DECLINE: Partial<Record<RuleId, string>> = {
   "CIRCUIT.FROZEN": "Spending is frozen on our side right now. Nothing can be charged.",
 };
 
+/** The cart after the levers have been pulled, plus what pulling them cost. */
+interface ShapedCart {
+  want: { sku: string; qty: number }[];
+  /** Per-SKU unit price a lever set. Absent means ordinary pricing. */
+  units: Map<string, Paise>;
+  used: Lever[];
+  substitutions: Substitution[];
+  /** An add-on the buyer was offered but did not invite. */
+  suggestion?: BundleSuggestion;
+}
+
+/**
+ * Did the buyer invite an add-on?
+ *
+ * A bundle is the one lever that changes what is in the cart, so it needs
+ * consent. An agent that silently appends a line to every basket is padding,
+ * and would deserve to be caught doing it.
+ */
+const INVITATIONS =
+  /\b(stock me up|top ?up|what else|anything else|weekly|restock|fill|usual|whatever you)\b/u;
+
+export function invitesAddOns(message: string): boolean {
+  return INVITATIONS.test(message.toLowerCase());
+}
+
 export class ScriptedRevenueAgent implements Negotiator {
   readonly mode = "scripted" as const;
   readonly #ctx: NegotiatorContext;
@@ -195,17 +228,22 @@ export class ScriptedRevenueAgent implements Negotiator {
 
   async negotiate(turn: NegotiationTurn): Promise<NegotiationResult> {
     const maxRounds = this.#ctx.maxRounds ?? 3;
-    const want = this.#opts.want ?? inferCart(this.#ctx, turn.buyer_message);
+    const asked = this.#opts.want ?? inferCart(this.#ctx, turn.buyer_message);
     const rounds: NegotiationRound[] = [];
 
-    if (want.length === 0) {
+    if (asked.length === 0) {
       return {
         reply: "We do not stock anything matching that. Tell me a category and I will quote.",
         rounds,
       };
     }
 
-    let proposal = this.#firstOffer(want);
+    // What the buyer literally asked for, priced ordinarily. This is the number
+    // every lever is measured against.
+    const baseline = this.#baseline(asked);
+
+    const shaped = this.#applyLevers(asked, turn.buyer_message);
+    let proposal = this.#firstOffer(shaped.want, shaped.units);
     let settled: NegotiationRound | undefined;
 
     for (let round = 0; round < maxRounds; round += 1) {
@@ -224,15 +262,109 @@ export class ScriptedRevenueAgent implements Negotiator {
       proposal = repaired;
     }
 
+    const final = paise(
+      settled?.feedback.computed_total_paise ?? settled?.proposal.quoted_total_paise ?? 0,
+    );
+
     return {
-      reply: this.#reply(settled, rounds),
+      reply: this.#reply(settled, rounds, shaped),
       rounds,
       ...(settled === undefined ? {} : { settled }),
+      ...(shaped.suggestion === undefined ? {} : { suggestion: shaped.suggestion }),
+      ...(shaped.substitutions.length === 0 ? {} : { substitutions: shaped.substitutions }),
+      value: basketValue(baseline, final, shaped.used),
     };
   }
 
+  /** The requested basket at ordinary pricing, with no lever applied. */
+  #baseline(want: readonly { sku: string; qty: number }[]): Paise {
+    const floors = new Map(priceFloor(this.#ctx, want.map((w) => w.sku)).map((f) => [f.sku, f]));
+    const discountBps = this.#opts.discountBps ?? 500;
+    return sumP(
+      want.flatMap((w) => {
+        const floor = floors.get(w.sku);
+        if (floor === undefined) return [];
+        const discounted = floor.list_paise - Math.floor((floor.list_paise * discountBps) / 10_000);
+        return [mulP(paise(Math.max(discounted, floor.lowest_legal_unit_paise)), w.qty)];
+      }),
+    );
+  }
+
+  /**
+   * Pull whichever levers the merchant profile allows.
+   *
+   * Order matters. Substitution first, because a line that cannot be filled has
+   * to be fixed before it can be priced. Then bulk tiers on what remains. Then
+   * a bundle add-on, which is the only lever that changes *what* is in the cart
+   * and so is the only one gated on the buyer inviting it.
+   */
+  #applyLevers(
+    asked: readonly { sku: string; qty: number }[],
+    message: string,
+  ): ShapedCart {
+    const catalog = this.#ctx.catalog;
+    const profile = this.#ctx.profile;
+    const used: Lever[] = [];
+    const substitutions: Substitution[] = [];
+    const units = new Map<string, Paise>();
+
+    // -- substitute ---------------------------------------------------------
+    let want = asked.flatMap((w) => {
+      const swap = substituteFor(catalog, profile, w.sku, w.qty);
+      if (swap === undefined) return [w];
+      substitutions.push(swap);
+      if (!used.includes("substitute")) used.push("substitute");
+      return [{ sku: swap.to_sku, qty: swap.qty }];
+    });
+
+    // -- bulk tier ----------------------------------------------------------
+    if (profile.levers.includes("bulk_tier") && this.#opts.underCutPaise === undefined) {
+      for (const w of want) {
+        const item = catalog.get(w.sku);
+        if (item === undefined) continue;
+        const { unit, tier } = bulkTierUnit(item, w.qty, profile);
+        if (tier.discount_bps > 0) {
+          units.set(w.sku, unit);
+          if (!used.includes("bulk_tier")) used.push("bulk_tier");
+        }
+      }
+    }
+
+    // -- bundle -------------------------------------------------------------
+    // Only when the buyer opened the door. Adding a line nobody asked for is
+    // padding, and a padded cart is a bad-faith cart however good the price is.
+    let suggestion: BundleSuggestion | undefined;
+    if (this.#opts.underCutPaise === undefined && this.#opts.want === undefined) {
+      const lines = want.map((w) => ({
+        sku: w.sku,
+        qty: w.qty,
+        unit_paise: units.get(w.sku) ?? this.#ordinaryUnit(w.sku),
+      }));
+      suggestion = bundleAddOn(catalog, profile, lines);
+      if (suggestion !== undefined && invitesAddOns(message)) {
+        want = [...want, { sku: suggestion.sku, qty: suggestion.qty }];
+        units.set(suggestion.sku, suggestion.unit_paise);
+        if (!used.includes("bundle")) used.push("bundle");
+        suggestion = undefined; // it is in the cart now, not a suggestion
+      }
+    }
+
+    return { want, units, used, substitutions, ...(suggestion === undefined ? {} : { suggestion }) };
+  }
+
+  #ordinaryUnit(sku: string): Paise {
+    const [floor] = priceFloor(this.#ctx, [sku]);
+    if (floor === undefined) return paise(0);
+    const discountBps = this.#opts.discountBps ?? 500;
+    const discounted = floor.list_paise - Math.floor((floor.list_paise * discountBps) / 10_000);
+    return paise(Math.max(discounted, floor.lowest_legal_unit_paise));
+  }
+
   /** List price less the configured discount, floored at (or deliberately under) the merchant floor. */
-  #firstOffer(want: readonly { sku: string; qty: number }[]): Proposal {
+  #firstOffer(
+    want: readonly { sku: string; qty: number }[],
+    units: ReadonlyMap<string, Paise>,
+  ): Proposal {
     const floors = new Map(priceFloor(this.#ctx, want.map((w) => w.sku)).map((f) => [f.sku, f]));
     const discountBps = this.#opts.discountBps ?? 500;
     const underCut = this.#opts.underCutPaise ?? 0;
@@ -240,11 +372,12 @@ export class ScriptedRevenueAgent implements Negotiator {
     const lines = want.flatMap((w) => {
       const floor = floors.get(w.sku);
       if (floor === undefined) return [];
+      const levered = units.get(w.sku);
       const discounted = floor.list_paise - Math.floor((floor.list_paise * discountBps) / 10_000);
       const unit =
         underCut > 0
           ? Math.max(0, floor.lowest_legal_unit_paise - underCut)
-          : Math.max(discounted, floor.lowest_legal_unit_paise);
+          : Math.max(levered ?? discounted, floor.lowest_legal_unit_paise);
       return [{ sku: w.sku, qty: w.qty, offer_unit_paise: paise(unit) }];
     });
 
@@ -285,7 +418,11 @@ export class ScriptedRevenueAgent implements Negotiator {
     };
   }
 
-  #reply(settled: NegotiationRound | undefined, rounds: readonly NegotiationRound[]): string {
+  #reply(
+    settled: NegotiationRound | undefined,
+    rounds: readonly NegotiationRound[],
+    shaped: ShapedCart,
+  ): string {
     if (settled === undefined) {
       const rule = rounds.at(-1)?.feedback.rule_ids[0];
       return DECLINE[rule ?? "MARGIN.FLOOR_BREACH"] ?? DECLINE_DEFAULT;
@@ -295,12 +432,29 @@ export class ScriptedRevenueAgent implements Negotiator {
       .map((l) => `${l.qty} x ${this.#ctx.catalog.get(l.sku)?.title ?? l.sku}`)
       .join(", ");
     const stepUp = settled.feedback.outcome === "ALLOW_WITH_STEPUP";
+
+    const notes: string[] = [];
+    for (const swap of shaped.substitutions) notes.push(swap.reason);
+    if (shaped.used.includes("bulk_tier")) {
+      notes.push("bulk pricing applied at this quantity");
+    }
+    if (shaped.used.includes("bundle")) {
+      notes.push("added to the basket so it ships in one trip");
+    }
+    if (shaped.suggestion !== undefined) {
+      notes.push(
+        `you could add ${shaped.suggestion.qty} x ${shaped.suggestion.title} at ` +
+          `${formatINR(shaped.suggestion.unit_paise)} -- ${shaped.suggestion.reason}`,
+      );
+    }
+
     return (
       `${items} comes to ${formatINR(paise(total))}. ` +
       (stepUp
-        ? "That is above your approval threshold, so I have sent an approval link to your human."
-        : "Confirmed and ready to pay.")
-    );
+        ? "That is above your approval threshold, so I have sent an approval link to your human. "
+        : "Confirmed and ready to pay. ") +
+      (notes.length === 0 ? "" : `(${notes.join("; ")}.)`)
+    ).trim();
   }
 }
 

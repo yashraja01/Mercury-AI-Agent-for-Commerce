@@ -125,7 +125,7 @@ type MerchantProfile = {
 | `rail` | `RazorpayPort` impls, HMAC verify, webhook parsing | Decide anything policy-related |
 | `store` | Mutable working state: catalogue, mandates, tokens, orders | Touch the Sakshi chain |
 | `seed` | Catalogue + mandate fixtures for both verticals | Contain logic of any kind |
-| `agent` | LLM negotiation, tool schemas, prompts, the Engine | Compute a final price or touch a key |
+| `agent` | Negotiation, revenue levers, tool schemas, prompts, the Engine | Compute a final price or touch a key |
 | `web` | Mission Control + the buyer-facing API, feed and Agent Card | Decide anything; it is a spectator |
 | `mcp` | Buyer transport over stdio | Accept a price, or hold state of its own |
 
@@ -156,7 +156,31 @@ submit: (proposal: Proposal) => Promise<GateFeedback>
 
 No store, no ledger, no rail, no key. `gateVia(engine, ...)` supplies it.
 
-## 9. The buyer surface
+## 9. The revenue levers
+
+Goal 1 says the Revenue Agent grows basket value. These are the mechanisms, and
+`MerchantProfile.levers` is what a merchant permits. A lever a profile does not
+list is never pulled, which is how one implementation serves both verticals.
+
+| Lever | Mechanism | Guard |
+|---|---|---|
+| `bulk_tier` | Quantity ladder: deeper discount at 5 / 10 / 25 / 50 units | Clamps to the margin floor; deeper tiers simply stop |
+| `bundle` | Add-on from a *different* category than the basket anchor | Capped at 40% of basket value, and only added when the buyer invites it |
+| `substitute` | Nearest stocked equivalent, same category | Never crosses category; silent if the line can be filled |
+
+Every lever clamps to `lowestLegalUnit` itself, so it cannot produce a price the
+gate would have to catch. The gate still checks — that is what makes the clamp
+safe to trust rather than merely polite.
+
+**Uplift is measured, not asserted.** `BasketValue` records what the buyer asked
+for versus what the gate approved, and it goes into the ledger beside the
+decision.
+
+**Bundling requires consent.** An agent that appends a line to every basket is
+padding. `bundle` returns a *suggestion* unless the buyer's message opens the
+door; only then does it enter the cart.
+
+## 10. The buyer surface
 
 An external agent reaches the merchant through three things, in this order:
 
@@ -170,12 +194,22 @@ An external agent reaches the merchant through three things, in this order:
 gateway**, not a second engine (D5, D16): one store, one ledger, one rail, so a
 purchase made from Claude Desktop appears live in Mission Control.
 
+**Every buyer-facing call is signed.** The mandate names the delegated agent's
+Ed25519 public key *inside the signed artifact*, so the human authorises exactly
+one key. A caller proves it holds the mandate by signing `{mandate_id, nonce,
+issued_at}` with the matching private key; Dwaar checks it as `HOLDER.*` rules
+before it looks at the cart. Without this a mandate id is a bearer token and
+every other limit is only as strong as the secrecy of a string in a request
+body. Mission Control passes `require_holder_proof: false` — there the caller
+*is* the merchant — and that exemption is an explicit argument, not an implied
+one.
+
 **No buyer-facing surface accepts a price.** Not a total, not a unit price, not
 a discount. A buyer sends a sentence; the merchant's agent proposes; Dwaar
 prices. An MCP tool taking `total_paise` from its caller would put an LLM back
 in the money path, which is the thing this whole design exists to prevent.
 
-## 10. The rail port
+## 11. The rail port
 
 `rail` exposes one interface with two implementations, chosen by `RAIL_MODE`:
 
@@ -196,7 +230,7 @@ interface RazorpayPort {
 
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
-## 11. Mission Control
+## 12. Mission Control
 
 One page, three panels, all spectators on the same run. The UI decides nothing;
 `scripts/demo.ts` drives the identical path with the browser closed.
@@ -212,12 +246,12 @@ scripted/Claude agent switch, a freeze kill switch, and reset.
 
 Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
 
-## 12. Money rule
+## 13. Money rule
 
 All money is **integer paise**, branded type `Paise`. No floats anywhere. Zod
 rejects non-integers at every boundary. Razorpay amounts are paise by definition.
 
-## 13. Constraints
+## 14. Constraints
 
 - Razorpay **test mode only**. Test UPI: `success@razorpay` / `failure@razorpay`.
 - Webhook signature: `HMAC_SHA256(rawBody, webhookSecret)` -> `X-Razorpay-Signature`.
@@ -227,7 +261,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 - Order `receipt` <= 40 chars and unique. `notes` <= 15 pairs, <= 256 chars each.
 - Secrets live only in `.env` (git-ignored). `.env.example` is committed.
 
-## 14. Protocol alignment
+## 15. Protocol alignment
 
 | Ecosystem primitive | Our implementation |
 |---|---|
@@ -239,7 +273,7 @@ rejects non-integers at every boundary. Razorpay amounts are paise by definition
 | UCP / ACP capability + product feed | `/api/feed/{merchant_id}` (live) |
 | Instant revocation | Global freeze flag -> `CIRCUIT.FROZEN` |
 
-## 15. Glossary
+## 16. Glossary
 
 - **Dwaar** — the deterministic policy gate. Pure function, no I/O, no LLM.
 - **Sakshi** — the append-only, hash-chained audit ledger.

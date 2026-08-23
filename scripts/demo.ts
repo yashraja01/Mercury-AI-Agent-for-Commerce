@@ -174,7 +174,11 @@ console.log(`\n${rule("=")}\nSakshi\n${rule("=")}`);
 const verdict = sakshi.verify();
 console.log(`  entries   ${sakshi.count()}`);
 console.log(`  tip       ${sakshi.tipHash()}`);
-console.log(`  chain     ${verdict.ok ? "INTACT" : `BROKEN at seq ${String(verdict.brokenAt)}`}`);
+console.log(
+  `  chain     ${
+    verdict.ok ? "INTACT" : `BROKEN at seq ${String(verdict.broken_at)} (${verdict.reason})`
+  }`,
+);
 console.log(`\n  npm run verify   to check the chain independently\n`);
 
 sakshi.close();

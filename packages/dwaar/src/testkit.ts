@@ -20,6 +20,8 @@ import type { DwaarInput, LedgerState } from "./evaluate.js";
  */
 
 export const KEYS = generateKeyPair();
+/** The agent this fixture mandate delegates to. */
+export const AGENT_KEYS = generateKeyPair();
 
 export const PROFILE: MerchantProfile = {
   merchant_id: "mch_demo",
@@ -78,6 +80,7 @@ export function mandateOf(over: Partial<ReserveMandate> = {}): ReserveMandate {
     mandate_id: "mnd_test",
     principal_id: "prn_alice",
     agent_id: "agt_buyer",
+    agent_public_key: AGENT_KEYS.publicKey,
     vertical: "quick_commerce",
     reserved_paise: paise(500_000), // Rs 5,000 envelope
     max_per_txn_paise: paise(200_000), // Rs 2,000 per txn

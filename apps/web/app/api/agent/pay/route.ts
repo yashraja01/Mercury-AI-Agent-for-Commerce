@@ -1,3 +1,4 @@
+import { zHolderProof } from "@mercury/core";
 import { TransactError, pay } from "@/lib/transact";
 
 export const runtime = "nodejs";
@@ -10,6 +11,7 @@ export async function POST(req: Request): Promise<Response> {
       order_id?: string;
       intent_token_id?: string;
       session_id?: string;
+      holder_proof?: unknown;
       simulate_failure?: boolean;
     };
 
@@ -17,7 +19,16 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error: "order_id and intent_token_id are required" }, { status: 400 });
     }
 
+    const parsed = zHolderProof.safeParse(body.holder_proof);
+    if (!parsed.success) {
+      return Response.json(
+        { error: "holder_proof is required to redeem a token", rule_id: "HOLDER.PROOF_MISSING" },
+        { status: 401 },
+      );
+    }
+
     const result = await pay({
+      holder_proof: parsed.data,
       order_id: body.order_id,
       intent_token_id: body.intent_token_id,
       ...(typeof body.session_id === "string" ? { session_id: body.session_id } : {}),

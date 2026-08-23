@@ -2,6 +2,7 @@ import {
   type CartLine,
   type CatalogItem,
   type Decision,
+  type HolderProof,
   type IntentToken,
   type MerchantProfile,
   type Paise,
@@ -13,6 +14,7 @@ import {
   type StepUpReason,
   formatINR,
   hashValue,
+  holderChallenge,
   newId,
   paise,
   verifyValue,
@@ -55,6 +57,21 @@ export interface DwaarInput {
   spent_token_ids?: ReadonlySet<string>;
   /** Present when settling: the token being redeemed. */
   intent_token?: IntentToken;
+
+  /**
+   * Demand proof that the caller holds this mandate.
+   *
+   * True on every buyer-facing surface. False for the merchant's own console,
+   * where the caller is the merchant rather than a delegated agent -- expressed
+   * as a flag so the exemption is visible in the input rather than implied by
+   * which code path happened to build it.
+   */
+  require_holder_proof?: boolean;
+  holder_proof?: HolderProof;
+  /** Nonces already used, so a replayed proof is refused. */
+  seen_holder_nonces?: ReadonlySet<string>;
+  /** How far from `now` a proof may be issued. Default 2 minutes. */
+  holder_proof_skew_ms?: number;
 }
 
 /* -------------------------------------------------------------- rule helpers */
@@ -103,8 +120,85 @@ export function evaluate(input: DwaarInput): Decision {
   }
   rules.push(ok("MANDATE.SIGNATURE", 1, 1, "Mandate signature verifies against the registered key."));
 
-  /* 3. Validity window. */
   const t = now.getTime();
+
+  /* 2b. Proof of holder.
+   *
+   * The signature above proves the envelope is genuine. It does not prove the
+   * caller is the agent the envelope was issued to -- without this check a
+   * mandate id is a bearer token, and anyone who learns one can spend it.
+   *
+   * The key is read from inside the signed mandate, so this verifies against
+   * what the *human* authorised rather than against anything our own database
+   * says. Required only where the caller is external; the merchant's own
+   * console passes `require_holder_proof: false`, which is explicit and shows
+   * up in the rule list rather than being a silent bypass. */
+  if (input.require_holder_proof === true) {
+    const proof = input.holder_proof;
+    if (proof === undefined) {
+      return deny(
+        rules,
+        bad("HOLDER.PROOF_MISSING", 0, 1, "No proof of holder was supplied for this mandate."),
+      );
+    }
+    if (proof.mandate_id !== mandate.mandate_id) {
+      return deny(
+        rules,
+        bad(
+          "HOLDER.SIGNATURE",
+          0,
+          1,
+          `Proof is for ${proof.mandate_id}, not ${mandate.mandate_id}.`,
+        ),
+      );
+    }
+
+    const skew = input.holder_proof_skew_ms ?? 120_000;
+    const issued = Date.parse(proof.issued_at);
+    const age = Number.isNaN(issued) ? Number.POSITIVE_INFINITY : Math.abs(t - issued);
+    if (age > skew) {
+      return deny(
+        rules,
+        bad(
+          "HOLDER.STALE",
+          Number.isFinite(age) ? age : skew + 1,
+          skew,
+          `Proof was issued at ${proof.issued_at}, outside the ${skew}ms window.`,
+        ),
+      );
+    }
+    rules.push(ok("HOLDER.STALE", age, skew, "Proof is within the accepted clock skew."));
+
+    if (input.seen_holder_nonces?.has(proof.nonce) === true) {
+      return deny(
+        rules,
+        bad("HOLDER.NONCE_REPLAY", 1, 0, `Proof nonce ${proof.nonce} has already been used.`),
+      );
+    }
+    rules.push(ok("HOLDER.NONCE_REPLAY", 0, 0, "Proof nonce is unused."));
+
+    const holds = verifyValue(
+      holderChallenge(proof),
+      proof.signature,
+      mandate.agent_public_key,
+    );
+    if (!holds) {
+      return deny(
+        rules,
+        bad(
+          "HOLDER.SIGNATURE",
+          0,
+          1,
+          "Proof does not verify against the agent key named in the signed mandate.",
+        ),
+      );
+    }
+    rules.push(
+      ok("HOLDER.SIGNATURE", 1, 1, "Caller holds the agent key this mandate delegates to."),
+    );
+  }
+
+  /* 3. Validity window. */
   const notBefore = Date.parse(mandate.not_before);
   const expiresAt = Date.parse(mandate.expires_at);
   if (t < notBefore || t >= expiresAt) {
