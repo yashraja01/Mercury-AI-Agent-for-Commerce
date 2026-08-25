@@ -6,20 +6,26 @@ import {
   type PricedCart,
   type Proposal,
   type RuleId,
+  bpsOf,
   hashValue,
   newId,
   newNonce,
   paise,
   receiptFor,
+  splitByWeight,
 } from "@mercury/core";
 import { type DwaarInput, cartHash, evaluate, repairProposal } from "@mercury/dwaar";
 import { type EventType, Sakshi } from "@mercury/sakshi";
 import { Store } from "@mercury/store";
 import {
+  type PaymentStatus,
   type RazorpayPort,
+  type TransferInput,
+  type WebhookEnvelope,
   type WebhookVerdict,
   TEST_VPA_SUCCESS,
   WebhookGate,
+  advanceStatus,
 } from "@mercury/rail";
 
 /**
@@ -335,7 +341,11 @@ export class Engine {
         receipt: order.receipt,
         // Recorded so a later compensation knows exactly what stock to put
         // back. The orders table keeps only a hash of the cart.
-        lines: cart.lines.map((l) => ({ sku: l.sku, qty: l.qty })),
+        lines: cart.lines.map((l) => ({
+          sku: l.sku,
+          qty: l.qty,
+          line_total_paise: l.line_total_paise,
+        })),
       },
     });
 
@@ -432,6 +442,7 @@ export class Engine {
 
       if (sim.failed) {
         lastFailure = sim.paymentId;
+        this.#store.setPaymentStatus(args.order_id, "failed", sim.paymentId);
         this.#log("PAYMENT_FAILED", {
           actor: { type: "razorpay", id: sim.paymentId },
           session_id: args.session_id,
@@ -464,6 +475,9 @@ export class Engine {
 
       const captured = await this.#rail.capturePayment(sim.paymentId, paise(order.amount));
       this.#store.setOrderStatus(args.order_id, "paid", captured.id);
+      // The payment FSM advances here as well as on the webhook, so a genuine
+      // `payment.captured` delivery arriving later is a no-op rather than news.
+      this.#store.setPaymentStatus(args.order_id, "captured", captured.id);
       const state = this.#store.consumeEnvelope(order.mandate_id, paise(order.amount));
 
       this.#log("PAYMENT_CAPTURED", {
@@ -474,6 +488,14 @@ export class Engine {
         envelope: this.#envelope(order.mandate_id),
         razorpay: { order_id: args.order_id, payment_id: captured.id, signature_verified: true },
         detail: { amount_paise: order.amount, attempts },
+      });
+
+      await this.#settleSplits({
+        order_id: args.order_id,
+        payment_id: captured.id,
+        amount: paise(order.amount),
+        cart_hash: order.cart_hash,
+        session_id: args.session_id,
       });
 
       return {
@@ -528,6 +550,7 @@ export class Engine {
     for (const r of args.restore) this.#store.releaseStock(r.sku, r.qty);
     this.#store.restoreEnvelope(order.mandate_id, paise(order.amount));
     this.#store.setOrderStatus(args.order_id, "refunded");
+    this.#store.setPaymentStatus(args.order_id, "refunded");
 
     this.#log("AUTO_REFUND_ISSUED", {
       actor: { type: "razorpay", id: refund.id },
@@ -542,6 +565,124 @@ export class Engine {
     });
 
     return { kind: "REFUNDED", refund_id: refund.id, reason: args.reason };
+  }
+
+  /* ------------------------------------------------------- split settlement */
+
+  /**
+   * Pay the suppliers out of a captured payment (Razorpay Route).
+   *
+   * A B2B basket is one cart, one payment and several sellers. The platform's
+   * commission comes off the top -- so a supplier's share is never quietly
+   * reduced by a fee it did not agree to -- and the rest is divided by what
+   * each supplier actually sold, to the paisa, using largest-remainder so the
+   * transfers sum to exactly what was captured.
+   *
+   * Quick-commerce sells its own inventory, so no line names a supplier, so
+   * nothing splits and no transfer is made. Same code, same rail, different
+   * data: the only thing that decides is the catalogue.
+   *
+   * A failure here never unwinds the capture. The money is legitimately the
+   * merchant's the moment it is captured; a transfer that did not go through
+   * is an operational problem to retry, not a reason to refund a buyer who did
+   * nothing wrong. It is recorded either way.
+   */
+  async #settleSplits(args: {
+    order_id: string;
+    payment_id: string;
+    amount: Paise;
+    cart_hash: string;
+    session_id: string;
+  }): Promise<void> {
+    const lines = this.#linesOf(args.cart_hash);
+    if (lines.length === 0) return;
+
+    const profile = this.#store.getMerchant(this.#merchantOf(lines));
+    const settlement = profile?.settlement;
+    if (profile === undefined || settlement === undefined) return;
+
+    // What each supplier sold, in paise. Own-inventory lines are not a split.
+    const bySupplier = new Map<string, number>();
+    for (const line of lines) {
+      const item = this.#store.getItem(line.sku);
+      const account = item?.supplier_account_id;
+      if (item === undefined || account === undefined) continue;
+      bySupplier.set(account, (bySupplier.get(account) ?? 0) + line.line_total_paise);
+    }
+    if (bySupplier.size === 0) return;
+
+    const commission = bpsOf(args.amount, settlement.commission_bps);
+    const distributable = paise(args.amount - commission);
+    const accounts = [...bySupplier.keys()];
+    const shares = splitByWeight(distributable, accounts.map((a) => bySupplier.get(a) ?? 0));
+
+    const transfers: TransferInput[] = accounts.map((account, i) => ({
+      account,
+      amount: shares[i] ?? paise(0),
+      notes: { order_id: args.order_id, mercury: "1" },
+    }));
+    if (settlement.commission_bps > 0) {
+      transfers.push({
+        account: settlement.commission_account_id,
+        amount: commission,
+        notes: { order_id: args.order_id, kind: "platform_commission" },
+      });
+    }
+
+    try {
+      const made = await this.#rail.createTransfers(args.payment_id, transfers);
+      this.#log("SETTLEMENT_SPLIT", {
+        actor: { type: "razorpay", id: args.payment_id },
+        session_id: args.session_id,
+        razorpay: {
+          order_id: args.order_id,
+          payment_id: args.payment_id,
+          transfer_ids: made.map((t) => t.id),
+        },
+        detail: {
+          captured_paise: args.amount,
+          commission_paise: commission,
+          commission_bps: settlement.commission_bps,
+          legs: transfers.map((t) => ({ account: t.account, amount_paise: t.amount })),
+          note: "transfers sum to the captured amount exactly",
+        },
+      });
+    } catch (e) {
+      this.#log("SETTLEMENT_SPLIT", {
+        actor: { type: "system", id: "mercury" },
+        session_id: args.session_id,
+        razorpay: { order_id: args.order_id, payment_id: args.payment_id },
+        detail: {
+          failed: true,
+          reason: e instanceof Error ? e.message : String(e),
+          note: "capture stands; the split needs an operator, not a refund",
+        },
+      });
+    }
+  }
+
+  /** The priced lines of an order, recovered from the ORDER_CREATED entry. */
+  #linesOf(cartHash: string): { sku: string; qty: number; line_total_paise: number }[] {
+    const entry = this.#sakshi
+      .byEventType("ORDER_CREATED")
+      .find((e) => e.cart_mandate_hash === cartHash);
+    const lines = (entry?.detail as
+      | { lines?: { sku: string; qty: number; line_total_paise?: number }[] }
+      | undefined)?.lines;
+    return (lines ?? []).map((l) => ({
+      sku: l.sku,
+      qty: l.qty,
+      line_total_paise: l.line_total_paise ?? 0,
+    }));
+  }
+
+  /** Which merchant a cart belongs to, taken from the goods themselves. */
+  #merchantOf(lines: { sku: string }[]): string {
+    for (const l of lines) {
+      const item = this.#store.getItem(l.sku);
+      if (item !== undefined) return item.merchant_id;
+    }
+    return "";
   }
 
   /* -------------------------------------------------------------- webhooks */
@@ -568,12 +709,83 @@ export class Engine {
       return verdict;
     }
 
+    const applied = this.#applyWebhook(verdict.event);
+
     this.#log("WEBHOOK_ACCEPTED", {
       actor: { type: "razorpay", id: verdict.event_id },
-      razorpay: { event_id: verdict.event_id, signature_verified: true },
-      detail: { event: verdict.event.event },
+      razorpay: {
+        event_id: verdict.event_id,
+        signature_verified: true,
+        ...(applied.order_id === undefined ? {} : { order_id: applied.order_id }),
+        ...(applied.payment_id === undefined ? {} : { payment_id: applied.payment_id }),
+      },
+      detail: {
+        event: verdict.event.event,
+        payment_status_before: applied.before,
+        payment_status_after: applied.after,
+        applied: applied.applied,
+        note: applied.note,
+      },
     });
     return verdict;
+  }
+
+  /**
+   * Fold one accepted event into the payment's state.
+   *
+   * Razorpay does not guarantee delivery order, so state advances by rank and
+   * never regresses: a `captured` that overtakes its own `authorized` still
+   * converges to `captured`, and the late `authorized` is recorded and
+   * discarded rather than winding the payment backwards (F5).
+   */
+  #applyWebhook(event: WebhookEnvelope): {
+    order_id?: string;
+    payment_id?: string;
+    before: string;
+    after: string;
+    applied: boolean;
+    note: string;
+  } {
+    const payment = event.payload.payment?.entity;
+    const refund = event.payload.refund?.entity;
+    const paymentId = payment?.id ?? refund?.payment_id;
+
+    if (paymentId === undefined) {
+      return { before: "n/a", after: "n/a", applied: false, note: "event carries no payment" };
+    }
+
+    const orderId = payment?.order_id ?? this.#store.orderIdForPayment(paymentId);
+    const order = orderId === undefined ? undefined : this.#store.getOrder(orderId);
+    if (order === undefined) {
+      // A genuine, correctly signed event for an order Mercury never created.
+      // Recorded, not applied: the signature proves the sender, not the claim.
+      return {
+        payment_id: paymentId,
+        before: "unknown",
+        after: "unknown",
+        applied: false,
+        note: `no local order for payment ${paymentId}`,
+      };
+    }
+
+    const before = order.payment_status as PaymentStatus;
+    const observed: PaymentStatus =
+      refund !== undefined ? "refunded" : (payment?.status ?? before);
+    const after = advanceStatus(before, observed);
+
+    if (after !== before) this.#store.setPaymentStatus(order.order_id, after, paymentId);
+
+    return {
+      order_id: order.order_id,
+      payment_id: paymentId,
+      before,
+      after,
+      applied: after !== before,
+      note:
+        after === before
+          ? `observed ${observed} does not advance ${before}; ignored`
+          : `payment advanced ${before} -> ${after}`,
+    };
   }
 
   /** Close an envelope and record the residual released back to the principal. */

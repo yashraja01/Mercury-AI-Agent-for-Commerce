@@ -4,11 +4,13 @@ import {
   MoneyError,
   applyBpsCeil,
   bpsBelow,
+  bpsOf,
   discountBpsFloor,
   formatINR,
   mulP,
   paise,
   rupees,
+  splitByWeight,
   subP,
   sumP,
 } from "./money.js";
@@ -124,5 +126,56 @@ describe("formatINR", () => {
     expect(formatINR(paise(29900))).toBe("Rs 299.00");
     expect(formatINR(paise(5))).toBe("Rs 0.05");
     expect(formatINR(paise(10_000_000))).toBe("Rs 1,00,000.00");
+  });
+});
+
+/* ------------------------------------------------------- split settlement */
+
+describe("splitByWeight", () => {
+  it("divides in proportion to the weights", () => {
+    expect(splitByWeight(paise(1_000), [1, 1])).toEqual([500, 500]);
+    expect(splitByWeight(paise(900), [2, 1])).toEqual([600, 300]);
+  });
+
+  it("never loses or invents a paisa", () => {
+    // 100 / 3 is the classic case: 33.33 each, and one paisa has to land
+    // somewhere. Largest remainder puts it on the first share, deterministically.
+    expect(splitByWeight(paise(100), [1, 1, 1])).toEqual([34, 33, 33]);
+    expect(sumP(splitByWeight(paise(100), [1, 1, 1]))).toBe(100);
+  });
+
+  it("gives everything to the first share when no weight has any weight", () => {
+    expect(splitByWeight(paise(500), [0, 0])).toEqual([500, 0]);
+  });
+
+  it("returns nothing for no shares", () => {
+    expect(splitByWeight(paise(500), [])).toEqual([]);
+  });
+
+  it("rejects a negative weight", () => {
+    expect(() => splitByWeight(paise(100), [1, -1])).toThrow(MoneyError);
+  });
+
+  it("PROPERTY: the split always sums to exactly the total", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 100_000_000 }),
+        fc.array(fc.integer({ min: 0, max: 10_000 }), { minLength: 1, maxLength: 8 }),
+        (total, weights) => {
+          const parts = splitByWeight(paise(total), weights);
+          expect(parts).toHaveLength(weights.length);
+          expect(parts.every((p) => p >= 0)).toBe(true);
+          expect(sumP(parts)).toBe(total);
+        },
+      ),
+    );
+  });
+});
+
+describe("bpsOf", () => {
+  it("rounds the fee down, so the payer keeps the fraction", () => {
+    expect(bpsOf(paise(10_001), 200)).toBe(200);
+    expect(bpsOf(paise(100_000), 250)).toBe(2_500);
+    expect(bpsOf(paise(999), 0)).toBe(0);
   });
 });

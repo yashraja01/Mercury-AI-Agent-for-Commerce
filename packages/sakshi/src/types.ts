@@ -14,6 +14,7 @@ export const EVENT_TYPES = [
   "REPRICED",
   "ORDER_CREATED",
   "PAYMENT_CAPTURED",
+  "SETTLEMENT_SPLIT",
   "PAYMENT_FAILED",
   "RETRY_BOUNDED",
   "STEPUP_ISSUED",
@@ -61,6 +62,7 @@ export interface RazorpayRecord {
   order_id?: string;
   payment_id?: string;
   refund_id?: string;
+  transfer_ids?: string[];
   link_id?: string;
   event_id?: string;
   signature_verified?: boolean;

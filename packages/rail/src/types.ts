@@ -52,6 +52,25 @@ export interface RzpRefund {
   created_at: number;
 }
 
+/**
+ * A Route transfer: money moved from the captured payment to a linked account.
+ *
+ * Razorpay settles the payment into the platform account and then transfers
+ * out; the transfer is a separate entity with its own lifecycle, which is why
+ * a split can be recorded, retried and audited independently of the capture.
+ */
+export interface RzpTransfer {
+  id: string;
+  entity: "transfer";
+  source: string;
+  recipient: string;
+  amount: number;
+  currency: "INR";
+  status: "created" | "pending" | "processed" | "failed";
+  notes: Record<string, string>;
+  created_at: number;
+}
+
 export interface RzpPaymentLink {
   id: string;
   entity: "payment_link";
@@ -79,6 +98,14 @@ export interface OrderInput {
   notes: Record<string, string>;
 }
 
+/** One leg of a split settlement. */
+export interface TransferInput {
+  /** Razorpay linked account id (`acc_...`). */
+  account: string;
+  amount: Paise;
+  notes: Record<string, string>;
+}
+
 export interface PaymentLinkInput {
   amount: Paise;
   description: string;
@@ -99,6 +126,7 @@ export const WEBHOOK_EVENTS = [
   "order.paid",
   "refund.processed",
   "payment_link.paid",
+  "transfer.processed",
 ] as const;
 export type WebhookEventName = (typeof WEBHOOK_EVENTS)[number];
 
@@ -112,6 +140,7 @@ export interface WebhookEnvelope {
     order?: { entity: RzpOrder };
     refund?: { entity: RzpRefund };
     payment_link?: { entity: RzpPaymentLink };
+    transfer?: { entity: RzpTransfer };
   };
   created_at: number;
 }
@@ -144,6 +173,15 @@ export interface RazorpayPort {
   fetchPayment(paymentId: string): Promise<RzpPayment | undefined>;
   capturePayment(paymentId: string, amount: Paise): Promise<RzpPayment>;
   refund(paymentId: string, amount: Paise, notes?: Record<string, string>): Promise<RzpRefund>;
+  /**
+   * Split a captured payment across linked accounts (Route).
+   *
+   * Implementations must refuse a split that exceeds the payment: a transfer
+   * of money that was never captured is not an error the rail should discover
+   * asynchronously.
+   */
+  createTransfers(paymentId: string, transfers: readonly TransferInput[]): Promise<RzpTransfer[]>;
+  fetchTransfers(paymentId: string): Promise<RzpTransfer[]>;
 
   /** HMAC_SHA256(order_id + "|" + payment_id, key_secret) */
   verifyCheckoutSignature(orderId: string, paymentId: string, signature: string): boolean;

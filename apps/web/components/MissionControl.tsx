@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ChaosPanel } from "./ChaosPanel";
 import { DwaarPanel } from "./DwaarPanel";
 import { Header } from "./Header";
 import { SakshiPanel, type VerifyState } from "./SakshiPanel";
@@ -20,6 +21,7 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
   const [events, setEvents] = useState<TheatreEvent[]>([]);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [selected, setSelected] = useState("topup");
+  const [view, setView] = useState<"theatre" | "chaos">("theatre");
   const [mode, setMode] = useState<"scripted" | "llm">("scripted");
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,7 +131,33 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
       <Header state={state} busy={busy} onFreeze={freeze} onReset={reset} />
 
       <main className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:p-6">
-        <div className="flex min-h-[560px] flex-col lg:h-[calc(100vh-9.5rem)]">
+        <div className="flex min-h-[560px] flex-col gap-2 lg:h-[calc(100vh-9.5rem)]">
+          {/* Two ways to watch the same gate: one run narrated, or the whole
+              failure table exercised at once. */}
+          <div className="flex items-center gap-1 border border-rule p-0.5 self-start">
+            {(["theatre", "chaos"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setView(v)}
+                disabled={running}
+                className={`px-3 py-1 font-mono text-[11px] uppercase tracking-[0.12em] transition-colors disabled:opacity-30 ${
+                  view === v ? "bg-rule text-paper" : "text-paper-faint hover:text-paper-dim"
+                }`}
+              >
+                {v === "theatre" ? "Theatre" : "Chaos console"}
+              </button>
+            ))}
+          </div>
+
+          {view === "chaos" ? (
+            <ChaosPanel
+              onSettled={async () => {
+                await refreshState();
+                await refreshLedger();
+              }}
+            />
+          ) : (
           <Theatre
             scenarios={state?.scenarios ?? []}
             selected={selected}
@@ -141,6 +169,7 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
             running={running}
             onRun={() => void run()}
           />
+          )}
         </div>
 
         <div className="grid min-h-0 grid-rows-[minmax(300px,auto)_minmax(300px,auto)] gap-4 lg:h-[calc(100vh-9.5rem)] lg:grid-rows-[1.15fr_1fr]">

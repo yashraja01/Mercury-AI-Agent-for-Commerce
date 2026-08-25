@@ -99,6 +99,53 @@ function assertBps(bps: number): void {
   }
 }
 
+/**
+ * Divide an amount across weights without losing or inventing a paisa.
+ *
+ * Split settlement is where rounding stops being cosmetic: three suppliers
+ * paid `floor(share)` each leaves the platform holding a remainder it never
+ * earned, and `round` can hand out more than was captured. Largest remainder
+ * distributes the leftover deterministically, and the result is guaranteed to
+ * sum to exactly `total` -- which is the only property a settlement needs.
+ *
+ * Ties go to the earlier weight, so the same cart always splits the same way.
+ */
+export function splitByWeight(total: Paise, weights: readonly number[]): Paise[] {
+  for (const w of weights) {
+    if (!Number.isFinite(w) || w < 0) throw new MoneyError(`splitByWeight: bad weight: ${w}`);
+  }
+  if (weights.length === 0) return [];
+
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (sum <= 0) {
+    // No weight anywhere: everything goes to the first share rather than
+    // vanishing. A zero-sum split that returns zeros would silently lose money.
+    return weights.map((_, i) => paise(i === 0 ? total : 0));
+  }
+
+  const exact = weights.map((w) => (total * w) / sum);
+  const floors = exact.map((x) => Math.floor(x));
+  let remainder = total - floors.reduce((a, b) => a + b, 0);
+
+  const order = exact
+    .map((x, i) => ({ i, frac: x - Math.floor(x) }))
+    .sort((a, b) => (b.frac === a.frac ? a.i - b.i : b.frac - a.frac));
+
+  const out = [...floors];
+  for (const { i } of order) {
+    if (remainder <= 0) break;
+    out[i] = (out[i] ?? 0) + 1;
+    remainder -= 1;
+  }
+  return out.map((n) => paise(n));
+}
+
+/** Take `bps` of an amount, rounded down. The payer keeps the remainder. */
+export function bpsOf(amount: Paise, bps: number): Paise {
+  assertBps(bps);
+  return paise(Math.floor((amount * bps) / 10_000));
+}
+
 /** Display only. Never use the result for arithmetic. */
 export function formatINR(p: Paise): string {
   const sign = p < 0 ? "-" : "";

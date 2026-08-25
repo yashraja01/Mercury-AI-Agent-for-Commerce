@@ -23,7 +23,8 @@
     "dev": "npm run dev -w @mercury/web",
     "start": "npm run start -w @mercury/web",
     "mcp": "node apps/mcp/dist/index.js",
-    "mcp:smoke": "tsx scripts/mcp-smoke.ts"
+    "mcp:smoke": "tsx scripts/mcp-smoke.ts",
+    "chaos": "tsx scripts/chaos.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

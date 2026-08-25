@@ -59,20 +59,27 @@ function anchored(value: string): string {
 }
 
 const DB_PATH = anchored(process.env["MERCURY_DB"] ?? "./mercury.db");
-const WALLET_PATH = anchored(process.env["MERCURY_WALLET"] ?? "./buyer-wallet.json");
+export const WALLET_PATH = anchored(process.env["MERCURY_WALLET"] ?? "./buyer-wallet.json");
 
 function build(): Mercury {
   const store = Store.open(DB_PATH);
   const sakshi = Sakshi.open(DB_PATH);
 
   const live = process.env["RAIL_MODE"] === "live";
-  const fixture = live ? undefined : new FixtureRail();
+  // One secret, read in one place, handed to whichever rail is in use. Setting
+  // RAZORPAY_WEBHOOK_SECRET therefore makes /api/webhook/razorpay accept real
+  // Razorpay deliveries *without* switching RAIL_MODE, which is what makes the
+  // move from fixture to live a change of environment rather than of code.
+  const webhookSecret = process.env["RAZORPAY_WEBHOOK_SECRET"] ?? "";
+  const fixture = live
+    ? undefined
+    : new FixtureRail(webhookSecret === "" ? {} : { webhookSecret });
   const rail: RazorpayPort =
     fixture ??
     new LiveRail({
       keyId: process.env["RAZORPAY_KEY_ID"] ?? "",
       keySecret: process.env["RAZORPAY_KEY_SECRET"] ?? "",
-      webhookSecret: process.env["RAZORPAY_WEBHOOK_SECRET"] ?? "",
+      webhookSecret,
     });
 
   const engine = new Engine({ store, sakshi, rail });
@@ -89,6 +96,27 @@ export function mercury(): Mercury {
 
 export function railMode(): "fixture" | "live" {
   return mercury().fixture === undefined ? "live" : "fixture";
+}
+
+/**
+ * Where the webhook secret came from, and whether there is one.
+ *
+ * The webhook route reports this instead of guessing. An unconfigured secret in
+ * live mode makes *every* genuine delivery fail its HMAC, which looks exactly
+ * like an attack in the logs; saying "not configured" out loud is the
+ * difference between a five-minute fix and an afternoon.
+ */
+export function webhookSecretStatus(): {
+  mode: "fixture" | "live";
+  configured: boolean;
+  source: "env" | "fixture-default" | "none";
+} {
+  const fromEnv = (process.env["RAZORPAY_WEBHOOK_SECRET"] ?? "") !== "";
+  const mode = railMode();
+  if (fromEnv) return { mode, configured: true, source: "env" };
+  return mode === "fixture"
+    ? { mode, configured: true, source: "fixture-default" }
+    : { mode, configured: false, source: "none" };
 }
 
 /** Load merchants, catalogue, principals and mandates into an open database. */

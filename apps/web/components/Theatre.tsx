@@ -171,6 +171,33 @@ function EventRow({ event }: { event: TheatreEvent }) {
           {event.detail}
         </Marker>
       );
+    case "split":
+      return (
+        <div className="settle-in ml-[80px] border border-verdigris-dim bg-verdigris/[0.04]">
+          <div className="flex items-baseline justify-between border-b border-rule px-3 py-1.5">
+            <span className="eyebrow">Route · split settlement</span>
+            <span className="figures text-[11px] text-paper-faint">
+              {rupees(event.captured_paise)} captured, paid out in {event.legs.length}
+            </span>
+          </div>
+          <table className="w-full text-[12px]">
+            <tbody>
+              {event.legs.map((leg) => (
+                <tr key={leg.account} className="border-b border-rule/60 last:border-0">
+                  <td className="figures px-3 py-1.5 text-paper-dim">{leg.account}</td>
+                  <td className="figures px-3 py-1.5 text-right text-verdigris">
+                    {rupees(leg.amount_paise)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="border-t border-rule px-3 py-1.5 text-[11px] text-paper-faint">
+            Commission {rupees(event.commission_paise)} off the top; the rest divided by what each
+            supplier sold. The legs sum to the capture exactly.
+          </p>
+        </div>
+      );
     case "note":
       return (
         <Marker tone="quiet" label="·">

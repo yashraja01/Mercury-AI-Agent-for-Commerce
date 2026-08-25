@@ -30,50 +30,64 @@
 | M5 | Mission Control UI | ☑ done | Negotiation Theatre, Dwaar panel, Sakshi explorer, SSE, freeze |
 | M6 | MCP server + Agent Card + feed | ☑ done | external Claude buys end-to-end; `npm run mcp:smoke` |
 | M6.5 | Levers, proof-of-holder, compensation | ☑ done | Goal 1 mechanised; buyer API signed; F2/F3 wired |
-| M7 | Chaos Console -- verify F1--F7 | ☐ todo | all failure-audit rows green |
-| M8 | Hardening | ☐ todo | LiveRail on test keys, Route (B2B), feed conformance, deploy, video |
+| M7 | Chaos Console -- verify F1--F7 | ☑ done | 7/7 rows green; `npm run chaos` and a UI panel |
+| M8 | Hardening | ◐ part | Route (B2B) done; LiveRail verified as far as keys allow. Feed conformance, deploy, video outstanding |
 
 Blocked: —
 
 ## Start here next session
 
-**State:** M0–M6.5 committed and green. 176 tests, build clean, chain verifies.
-Last commit `2275f27`. Nothing is half-finished — the tree is a clean stopping
-point, not a pause mid-edit.
+**State:** M0-M7 committed and green, plus the first slice of M8. 193 tests,
+build clean, chain verifies, and all seven failure-audit rows verify against the
+running app. Nothing is half-finished.
 
 **Sanity check before writing code:**
 
 ```bash
-npm install && npm run build && npm test    # expect 176 passed
+npm install && npm run build && npm test    # expect 193 passed
 npm run seed && npm run demo                # both verticals, terminal
-npm run dev                                 # then npm run mcp:smoke elsewhere
+npm run dev                                 # then, elsewhere:
+npm run chaos                               # expect 7/7 rows verified
+npm run mcp:smoke
 ```
 
-**The next work, in the order I would do it.** M7 is the Chaos Console; the
-first item below belongs to it and is the largest remaining gap between the
-failure-audit table and reality.
+**The next work, in the order I would do it.** M8 is part done: Route landed,
+and the webhook route is wired to a real secret. What is left needs either an
+account we do not have or a human.
 
 | # | Task | Why now | Size |
 |---|---|---|---|
-| 1 | `POST /api/webhook/razorpay` wiring `Engine.handleWebhook` | F4/F5 are unit-tested at `WebhookGate` but **no HTTP route exists** — a forged delivery has never been rejected over the wire or landed in Sakshi. Two audit rows depend on it | ~80 lines |
-| 2 | Write `BasketValue` into Sakshi + show uplift in Mission Control | The Goal 1 metric exists on the negotiation result and nobody can see it. Cheap, and it is the number a judge asks about | small |
-| 3 | Lever tools for `LlmRevenueAgent` (`bulk_tier_quote`, `suggest_bundle`) | With Claude driving, Goal 1 reverts to a flat discount — the scripted agent has levers and the LLM one does not. Breaks the scripted/LLM parity M4 was built on | medium |
-| 4 | Run the LLM path once with a real key | `LlmRevenueAgent` has **never executed**. The headline claim rests on unrun code, and it now also lacks levers and holder proofs | small, needs `ANTHROPIC_API_KEY` |
-| 5 | Tests for `apps/web` and `apps/mcp` | Still zero. Every bug in M6 and M6.5 was in app code or scripts, found by hand | medium |
-| 6 | M8 hardening | LiveRail smoke on test keys, deploy, video | large |
+| 1 | Feed + Agent Card conformance (`npm run conformance`) | The feed claims UCP/ACP shape and nothing checks it. Cheap, and it must also assert `supplier_account_id` never leaks into a public feed | small |
+| 2 | `npm run live:smoke` against real `rzp_test_` keys | LiveRail's HTTP calls have never run. The webhook half is now proven; the API half is not | small, **needs a Razorpay account** |
+| 3 | Deploy: Dockerfile, `/api/health`, SQLite volume notes | Nothing is deployed, and SQLite on a container needs a real disk or the ledger dies with the pod | medium, **needs a hosting account** |
+| 4 | Write `BasketValue` into Sakshi + show uplift | The Goal 1 metric exists on the negotiation result and nobody can see it | small |
+| 5 | Lever tools for `LlmRevenueAgent` | With Claude driving, Goal 1 reverts to a flat discount; the scripted agent has levers and the LLM one does not | medium |
+| 6 | Run the LLM path once with a real key | `LlmRevenueAgent` has **never executed** | small, needs `ANTHROPIC_API_KEY` |
+| 7 | Demo video | A runbook exists in nobody's head but mine | **needs a human** |
 
 **Known gaps, stated plainly:**
 
-- F4/F5 have no end-to-end path (item 1). F1, F2, F3, F6, F7 are observed.
-- `LlmRevenueAgent` is unproven against the real API (item 4).
+- `LlmRevenueAgent` is unproven against the real API (item 6).
 - `inferCart` is keyword matching where buyer intent enters the system. It fails
-  safe — a misread costs a negotiation round, never money — but it is the
+  safe -- a misread costs a negotiation round, never money -- but it is the
   weakest link in the default path.
 - `npm audit` reports 3 high advisories from Next 15's own postcss/sharp.
   Clearing them means Next 16, a framework major, and that is the user's call.
 - `credit_terms` is declared as a lever and implemented by nothing. It is
   discussed in the B2B persona as a closing lever the agent may not price, which
   is defensible, but it is not mechanised like the other three.
+- The chaos bench spends real demo budget: one debit of eight and Rs 570 per
+  full pass, so eight passes from a fresh seed. This is now handled rather than
+  merely known -- rows preflight the bench, report `blocked` instead of failing,
+  and the panel offers Reset -- but the ledger still grows about 38 entries per
+  pass, which is worth knowing before a demo.
+- LiveRail's **API** calls are still unexercised: no order has ever been created
+  against api.razorpay.com. Its **webhook** half is now proven -- a body signed
+  with `openssl dgst -sha256 -hmac`, which is exactly how Razorpay signs, is
+  accepted in live mode and rejected when tampered with.
+- Route's transfers are exercised only on `FixtureRail`. The split arithmetic is
+  property-tested and cannot lose a paisa; whether a real linked account accepts
+  the transfer is untested, because there is no real linked account.
 
 **Operational gotchas, all learned the hard way:**
 
@@ -91,9 +105,9 @@ failure-audit table and reality.
 - **`scripts/` is typechecked separately** (`tsc --noEmit -p scripts/tsconfig.json`,
   wired into `build` and `typecheck`) because it is not in the composite graph.
 - Killing the dev server on Windows: the npm wrapper survives a plain
-  `taskkill`. Kill by port instead —
+  `taskkill`. Kill by port instead --
   `Get-NetTCPConnection -LocalPort 3000 -State Listen | %{ Stop-Process -Id $_.OwningProcess -Force }`.
-- **Do not use Python single-quoted strings to write regexes into source.** ``
+- **Do not use Python single-quoted strings to write regexes into source.** `\b`
   becomes a literal backspace byte and the pattern silently stops matching. Use
   raw strings, or the Write/Edit tools.
 
@@ -118,6 +132,9 @@ failure-audit table and reality.
 | D15 | 2026-08-23 | Tailwind v4 with hand-built components, not shadcn/ui | Mission Control is about eight distinct elements. shadcn adds a generator, a `components/ui` tree and Radix for controls we do not need, and its defaults are exactly the look the UI should not have. CONTEXT updated | shadcn/ui (as originally planned in the stack table) |
 | D16 | 2026-08-23 | The MCP server is a **thin HTTP client of the gateway**, not a second copy of the engine | Keeps D5's single execution point literally true: one store, one ledger, one rail instance. A purchase made from Claude Desktop therefore appears live in Mission Control, and there is exactly one place where money moves | Giving the MCP process its own Store/Engine (two rails, two in-memory order sets, a demo that silently diverges from what the browser shows) |
 | D17 | 2026-08-23 | No buyer-facing surface accepts a price -- no total, no unit price, no discount | An MCP tool taking `total_paise` from its caller puts an LLM back in the money path, which is the exact anti-pattern the architecture exists to prevent. The buyer sends a sentence; the merchant's agent proposes; Dwaar prices | A conventional `create_cart(items, total)` tool shape (familiar, and quietly fatal) |
+| D20 | 2026-08-25 | The Chaos Console drives the failure rows over **HTTP**, against the app's own routes | F4 and F5 were ticked in the audit table for two milestones on the strength of unit tests against a class, while no HTTP route existed at all. A drill that calls the engine in-process would have reproduced exactly that blind spot. `runChaos` takes the request's own origin and posts real deliveries, so the thing being verified is the surface Razorpay actually reaches | Calling `Engine.handleWebhook` directly from the console (faster, and blind to every routing, header and raw-body mistake); a separate chaos harness with its own store (would prove a copy of the system works) |
+| D21 | 2026-08-25 | Chaos rows preflight the bench and report `blocked`, and Reset is never automatic | A setup denied for lack of budget looks exactly like the failure the row is testing, so the two must be visibly different or the table stops being evidence. Auto-resetting would fix the bench by deleting the ledger, which is the one thing the product asks to be trusted on | Auto-reset on exhaustion (destroys the audit trail to keep a demo tidy); a bigger seed mandate (moves the cliff, does not remove it); letting the row fail (trains everyone to ignore red) |
+| D22 | 2026-08-25 | A failed Route transfer leaves the capture standing | The buyer paid correctly and the goods are theirs; the money is the merchant's at capture. A stuck payout between two of the merchant's own accounts is an operator's problem, and refunding a blameless buyer to tidy it up would be a worse outcome for everyone | Refunding on transfer failure (punishes the buyer for a supplier's onboarding); retrying inline (turns a settlement into an unbounded loop inside a request) |
 | D18 | 2026-08-23 | The delegated agent's **public key lives inside the signed mandate** | The human is not authorising "an agent", they are authorising exactly one key. It makes proof-of-holder verifiable by anyone holding the mandate -- no registry lookup, no shared secret, no trust in our own database -- and it means a stolen mandate id buys nothing | A separate agent-key registry (one more thing to keep in sync, and it moves trust into our DB); signing with the principal's own key (that is the human's key, not the agent's) |
 | D19 | 2026-08-23 | `bundle` needs the buyer's invitation; `bulk_tier` and `substitute` do not | A tier and a substitution answer what the buyer asked for. A bundle changes *what is in the cart*, and an agent that appends a line to every basket is padding -- which the persona prompt already forbids, so the code should too | Always bundling (higher AOV, bad faith); never bundling (Goal 1 stays unimplemented) |
 
@@ -132,12 +149,117 @@ failure-audit table and reality.
 | F1 | Parameter drift | Adversarial buyer pushes agent below margin floor | Hard DENY, clamp to floor, agent re-quotes. **No Razorpay call made** | `DRIFT_BLOCKED`, `REPRICED` | ☑ |
 | F2 | Payment decline | `failure@razorpay` | <=2 bounded retries re-checked against remaining envelope, then UPI Payment Link fallback | `PAYMENT_FAILED`, `RETRY_BOUNDED`, `STEPUP_ISSUED` | ☑ |
 | F3 | Inventory race | Two agents, last unit, concurrent | `BEGIN IMMEDIATE` + conditional UPDATE; loser denied. If captured -> automatic refund | `INVENTORY_CONFLICT`, `AUTO_REFUND_ISSUED` | ☑ |
-| F4 | Forged webhook | Bad `X-Razorpay-Signature` | 400; **order state unchanged**; genuine webhook then processes | `WEBHOOK_REJECTED` | ☐ |
-| F5 | Out-of-order / duplicate webhook | `captured` before `authorized`, then replay | Dedupe on `x-razorpay-event-id`; monotonic FSM converges; replay is a no-op | `WEBHOOK_DEDUPED` | ☐ |
+| F4 | Forged webhook | Bad `X-Razorpay-Signature` | 400; **order state unchanged**; genuine webhook then processes | `WEBHOOK_REJECTED` | ☑ |
+| F5 | Out-of-order / duplicate webhook | `captured` before `authorized`, then replay | Dedupe on `x-razorpay-event-id`; monotonic FSM converges; replay is a no-op | `WEBHOOK_DEDUPED` | ☑ |
 | F6 | Mandate breach | Purchase exceeding remaining envelope | DENY with exact observed/limit paise. **Zero Razorpay calls** | `MANDATE_BREACH_BLOCKED` | ☑ |
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+
+### 2026-08-25 — M8 (part): Route, the bench, and a real webhook secret
+
+Three things, two of them the "pre-M8" items and one the first real slice of M8.
+
+**The bench is no longer a trap.** Rows that need a live order now preflight the
+demo mandate before injecting anything, and a spent bench reports `blocked` --
+brass, "not a failure" -- rather than red. It is a real distinction: a denied
+*setup* produces exactly the symptoms of the failure the row exists to test, and
+a table that cannot tell the two apart is a table nobody trusts. `benchStatus()`
+reports debits, envelope and stock, the panel shows them with a Reset button
+once a single pass is left, and `npm run chaos -- --reset` does the same
+headlessly. Exit codes now separate the cases: 0 verified, 1 failed, 3 blocked.
+
+Reset stays a button and never fires by itself. It destroys the database, and
+Sakshi is the artifact this whole product asks to be trusted on; topping up a
+bench is not a good enough reason to delete the evidence.
+
+D21: the bench cost is **measured, not estimated** -- one pass costs one debit,
+Rs 570 and four bags of rice, taken from a freshly seeded run. The first version
+counted the ghee as a per-run cost and reported "1 full pass left" on a fresh
+bench, because the seed stocks exactly one tin and F3 refunds it. Stock that
+comes back is a level, not a drain.
+
+**The webhook secret is read from the environment, once.** `RAZORPAY_WEBHOOK_SECRET`
+now feeds whichever rail is in use, so setting it makes `/api/webhook/razorpay`
+verify genuine Razorpay deliveries *without* switching `RAIL_MODE` -- the move
+from fixture to live is a change of environment, not of code. A missing secret
+in live mode answers **503 not_configured** instead of a signature mismatch:
+otherwise every genuine delivery would be recorded in Sakshi as a rejected
+webhook, and the audit trail would fill with attacks that never happened.
+
+Verified without a Razorpay account, by signing a body with
+`openssl dgst -sha256 -hmac` -- the same HMAC Razorpay computes: genuine 200,
+tampered 400, unset 503.
+
+**Route: one payment, several sellers.** A wholesale basket is routinely
+multi-vendor, and until now the money all landed in one place. `splitByWeight`
+divides a captured payment by what each supplier actually sold, using largest
+remainder so the legs sum to *exactly* the capture -- property-tested over
+random totals and weights, because "we lost a paisa" is the failure mode that
+turns into a reconciliation ticket six weeks later. The platform commission
+comes off the top, so a supplier's share is never quietly reduced by a fee it
+did not agree to.
+
+D22: a **failed transfer does not unwind the capture**. The money is
+legitimately the merchant's the moment it is captured; a payout that did not go
+through is an operational problem to retry, not a reason to reverse a payment
+from a buyer who did nothing wrong. It is recorded either way, with `failed:
+true` and the reason.
+
+Quick-commerce sells its own inventory: no line names a supplier, so nothing
+splits and no transfer is made. Same engine, same rail, different catalogue --
+which is the vertical-agnostic claim (D9) holding under one more kind of load.
+
+193 tests (up from 181), build clean, chain verifies, chaos 7/7.
+
+
+### 2026-08-25 — M7 the Chaos Console
+
+The failure-audit table stops being a claim in a markdown file and becomes
+something you can press.
+
+**The gap this closed.** F4 and F5 were unit-tested at `WebhookGate` and had no
+HTTP route at all, so a forged delivery had never been rejected *as a request*
+and a duplicate had never been deduped over the wire. Two rows of the audit
+table were ticked against code that no request had ever reached.
+
+- `POST /api/webhook/razorpay`: raw body via `req.text()`, HMAC verified against
+  those exact bytes before anything parses them. 400 on a bad signature, 200 on
+  a duplicate — an error there would only make Razorpay retry harder.
+- `Engine.handleWebhook` now *applies* an accepted event instead of only
+  recording it. Payment state advances by rank and never regresses, so a
+  `captured` that overtakes its own `authorized` converges to `captured` and the
+  late event is recorded and discarded. `orders.payment_status` is the new
+  column; capture, decline and refund all move it too, which is what makes a
+  genuine later delivery a no-op rather than news.
+- `apps/web/lib/chaos.ts`: seven rows, each injecting its own fault and then
+  checking the recovery — the Sakshi events the row promises, plus the state
+  that must not have moved (no `ORDER_CREATED` on a denial, an envelope restored
+  to the paisa, exactly one `PAYMENT_CAPTURED` under replay).
+- Two front ends, one implementation: a Chaos Console panel in Mission Control
+  (tabbed beside the theatre) and `npm run chaos`, which prints the table and
+  exits non-zero on any red row.
+
+**Choices worth recording.**
+
+- D20: the chaos rows drive **HTTP**, not the engine. `runChaos` takes the app's
+  own origin and posts real requests to its own routes. An in-process call would
+  prove the engine works and say nothing about the wire, which is precisely the
+  gap that let F4/F5 sit ticked for two milestones.
+- The rows that need an order buy one through `quote()` first, so the setup uses
+  the same gate as everything else. That makes the bench finite — the demo
+  mandate is eight transactions — and a denied *setup* now says so in the check
+  detail, with the remaining envelope and "Press Reset", rather than looking
+  like the failure it was meant to test.
+- A correctly signed event for an order Mercury never created is accepted and
+  **not applied**, logged with `applied: false`. The signature proves who sent
+  it, not that the claim is ours.
+
+**Observed, not asserted.** `npm run chaos` against a freshly seeded database:
+7/7 rows verified, chain intact at 40 entries; a second consecutive run also
+7/7 at 78 entries. Five new engine tests cover the same F4/F5 behaviour at the
+unit level (181 total, up from 176), and `npm run build` is clean.
+
 
 ### 2026-08-23 — M6.5 levers, proof-of-holder, compensation
 
@@ -191,7 +313,7 @@ admission, not something a buyer can assert.
   now include `tsc --noEmit -p scripts/tsconfig.json`, which immediately found a
   second latent bug (`demo.ts` reading `verdict.brokenAt`, a field that does not
   exist).
-- **A literal backspace in a regex.** A Python-driven edit turned `` into
+- **A literal backspace in a regex.** A Python-driven edit turned `\b` into
   0x08, so the bundle-invitation pattern never matched. Repo scanned for others;
   none.
 

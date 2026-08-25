@@ -9,6 +9,8 @@ import type {
   RzpPayment,
   RzpPaymentLink,
   RzpRefund,
+  RzpTransfer,
+  TransferInput,
 } from "./types.js";
 
 /**
@@ -128,6 +130,48 @@ export class LiveRail implements RazorpayPort {
       method: "POST",
       body: JSON.stringify({ amount: paise(amount), notes }),
     });
+  }
+
+  /* ------------------------------------------------------------- Route --- */
+
+  /**
+   * Split a captured payment across linked accounts.
+   *
+   * Razorpay takes the whole split in one call, and rejects it outright if the
+   * legs exceed the payment. That is the behaviour to want: a partially applied
+   * split would leave money stranded between accounts with no single record of
+   * what was intended.
+   */
+  async createTransfers(
+    paymentId: string,
+    transfers: readonly TransferInput[],
+  ): Promise<RzpTransfer[]> {
+    const body = await this.#call<{ items?: RzpTransfer[] } | RzpTransfer[]>(
+      `/payments/${paymentId}/transfers`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          transfers: transfers.map((t) => ({
+            account: t.account,
+            amount: paise(t.amount),
+            currency: "INR",
+            notes: t.notes,
+          })),
+        }),
+      },
+    );
+    return Array.isArray(body) ? body : (body.items ?? []);
+  }
+
+  async fetchTransfers(paymentId: string): Promise<RzpTransfer[]> {
+    try {
+      const body = await this.#call<{ items?: RzpTransfer[] }>(
+        `/payments/${paymentId}/transfers`,
+      );
+      return body.items ?? [];
+    } catch {
+      return [];
+    }
   }
 
   verifyCheckoutSignature(orderId: string, paymentId: string, signature: string): boolean {

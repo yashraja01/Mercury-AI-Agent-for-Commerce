@@ -13,6 +13,8 @@ import type {
   RzpPayment,
   RzpPaymentLink,
   RzpRefund,
+  RzpTransfer,
+  TransferInput,
   WebhookEnvelope,
   WebhookEventName,
 } from "./types.js";
@@ -57,6 +59,7 @@ export class FixtureRail implements RazorpayPort {
   readonly #orders = new Map<string, RzpOrder>();
   readonly #payments = new Map<string, RzpPayment>();
   readonly #refunds = new Map<string, RzpRefund>();
+  readonly #transfers = new Map<string, RzpTransfer[]>();
   readonly #links = new Map<string, RzpPaymentLink>();
   readonly #emitted: WebhookEnvelope[] = [];
 
@@ -231,6 +234,50 @@ export class FixtureRail implements RazorpayPort {
       payment,
       signature: computeCheckoutSignature(orderId, payment.id, this.#keySecret),
     };
+  }
+
+  /* ------------------------------------------------------------- Route --- */
+
+  async createTransfers(
+    paymentId: string,
+    transfers: readonly TransferInput[],
+  ): Promise<RzpTransfer[]> {
+    const payment = this.#payments.get(paymentId);
+    if (payment === undefined) throw new RailError(`no such payment: ${paymentId}`);
+    if (payment.status !== "captured") {
+      throw new RailError(`cannot transfer from a payment that is ${payment.status}`);
+    }
+
+    const already = (this.#transfers.get(paymentId) ?? []).reduce((a, t) => a + t.amount, 0);
+    const asked = transfers.reduce((a, t) => a + t.amount, 0);
+    if (already + asked > payment.amount) {
+      throw new RailError(
+        `transfers exceed the captured amount: ${already + asked} > ${payment.amount}`,
+      );
+    }
+
+    const made = transfers.map((t) => {
+      const transfer: RzpTransfer = {
+        id: this.#id("trf"),
+        entity: "transfer",
+        source: paymentId,
+        recipient: t.account,
+        amount: t.amount,
+        currency: "INR",
+        status: "processed",
+        notes: t.notes,
+        created_at: this.#now(),
+      };
+      this.#emit("transfer.processed", { transfer: { entity: transfer } });
+      return transfer;
+    });
+
+    this.#transfers.set(paymentId, [...(this.#transfers.get(paymentId) ?? []), ...made]);
+    return made;
+  }
+
+  async fetchTransfers(paymentId: string): Promise<RzpTransfer[]> {
+    return [...(this.#transfers.get(paymentId) ?? [])];
   }
 
   /** Sign a body with the webhook secret -- for constructing genuine test deliveries. */

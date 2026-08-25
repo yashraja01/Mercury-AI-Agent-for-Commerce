@@ -28,6 +28,23 @@ export type Lever = z.infer<typeof zLever>;
  * The only per-vertical policy input Dwaar reads. If a vertical needs behaviour
  * Dwaar does not have, add a field here -- never a branch inside Dwaar.
  */
+/**
+ * Split settlement configuration -- Razorpay Route, in Mercury's terms.
+ *
+ * A B2B basket is frequently multi-vendor: the buyer sees one cart and one
+ * payment, and several suppliers have to be paid out of it. The platform's own
+ * cut is a commission in bps, taken before the suppliers are paid, so a
+ * supplier's share is never quietly reduced by a fee it did not agree to.
+ */
+export const zSettlement = z.object({
+  mode: z.literal("route"),
+  /** Platform commission, taken off the top. */
+  commission_bps: zBps,
+  /** Where the commission lands. */
+  commission_account_id: z.string().min(1),
+});
+export type Settlement = z.infer<typeof zSettlement>;
+
 export const zMerchantProfile = z.object({
   merchant_id: z.string().min(1),
   display_name: z.string().min(1),
@@ -38,6 +55,13 @@ export const zMerchantProfile = z.object({
   max_discount_bps: zBps,
   levers: z.array(zLever),
   category_taxonomy: z.array(z.string().min(1)),
+  /**
+   * Split settlement, for verticals where the money does not all belong to one
+   * party (Razorpay Route). Dwaar never reads this: how a captured rupee is
+   * divided afterwards is not an authorisation question, and putting it in
+   * front of the gate would be a category error.
+   */
+  settlement: zSettlement.optional(),
 });
 export type MerchantProfile = z.infer<typeof zMerchantProfile>;
 
@@ -55,6 +79,15 @@ export const zCatalogItem = z.object({
   stock: z.number().int().nonnegative(),
   /** Minimum order quantity (B2B). 1 for consumer goods. */
   moq: z.number().int().positive().default(1),
+  /**
+   * The Razorpay linked account that gets paid for this line, when the seller
+   * is not the merchant itself. Absent for own-inventory goods, which is why
+   * quick-commerce settles as a single payment and nothing splits.
+   *
+   * Never published in the feed: who supplies a merchant is the merchant's
+   * business, not the buyer's.
+   */
+  supplier_account_id: z.string().min(1).optional(),
 });
 export type CatalogItem = z.infer<typeof zCatalogItem>;
 

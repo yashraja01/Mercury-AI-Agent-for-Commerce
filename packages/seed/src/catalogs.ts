@@ -47,16 +47,42 @@ export const B2B_PROCUREMENT: MerchantProfile = {
   max_discount_bps: 3_500,
   levers: ["bulk_tier", "credit_terms", "substitute"],
   category_taxonomy: ["staples", "beverages", "packaging"],
+  /*
+   * Wholesale is a multi-vendor floor: the buyer sees one cart and pays once,
+   * and two different suppliers have to be paid out of it. Route does the
+   * splitting; the 2% commission comes off the top so a supplier's share is
+   * never reduced by a fee it did not agree to.
+   */
+  settlement: {
+    mode: "route",
+    commission_bps: 200,
+    commission_account_id: "acc_MERCURY_PLATFORM",
+  },
 };
 
+/**
+ * The linked accounts behind the wholesale catalogue.
+ *
+ * Real Razorpay linked account ids look like this and are created once, in the
+ * dashboard, per supplier. They are seed data rather than configuration
+ * because which supplier sells which SKU is a fact about the catalogue.
+ */
+export const SUPPLIER_GRAINS = "acc_ANNAPURNA_GRAINS";
+export const SUPPLIER_PACKAGING = "acc_SHREE_PACKAGING";
+
+/*
+ * Staples come from the grain supplier, packaging from another. A cart that
+ * crosses both is the ordinary case in wholesale, and it is what makes the
+ * split settlement worth having rather than a configuration flourish.
+ */
 export const B2B_ITEMS: CatalogItem[] = [
-  item("WS_RICE_25KG", "Sona Masoori Rice 25kg", "staples", "sack", 2_800, 2_200, 200, 4),
-  item("WS_ATTA_50KG", "Whole Wheat Atta 50kg", "staples", "sack", 2_400, 1_950, 120, 2),
-  item("WS_OIL_15L", "Sunflower Oil 15L tin", "staples", "tin", 2_250, 1_800, 60, 2),
-  item("WS_DAL_30KG", "Toor Dal 30kg", "staples", "sack", 5_100, 4_200, 40, 2),
-  item("WS_TEA_5KG", "Assam Tea 5kg", "beverages", "carton", 4_200, 3_400, 25, 1),
-  item("WS_CUPS_1000", "Paper Cups (1000 ct)", "packaging", "carton", 1_600, 1_250, 90, 5),
-  item("WS_FOIL_10", "Aluminium Foil 10-roll", "packaging", "carton", 1_150, 900, 35, 2),
+  item("WS_RICE_25KG", "Sona Masoori Rice 25kg", "staples", "sack", 2_800, 2_200, 200, 4, SUPPLIER_GRAINS),
+  item("WS_ATTA_50KG", "Whole Wheat Atta 50kg", "staples", "sack", 2_400, 1_950, 120, 2, SUPPLIER_GRAINS),
+  item("WS_OIL_15L", "Sunflower Oil 15L tin", "staples", "tin", 2_250, 1_800, 60, 2, SUPPLIER_GRAINS),
+  item("WS_DAL_30KG", "Toor Dal 30kg", "staples", "sack", 5_100, 4_200, 40, 2, SUPPLIER_GRAINS),
+  item("WS_TEA_5KG", "Assam Tea 5kg", "beverages", "carton", 4_200, 3_400, 25, 1, SUPPLIER_GRAINS),
+  item("WS_CUPS_1000", "Paper Cups (1000 ct)", "packaging", "carton", 1_600, 1_250, 90, 5, SUPPLIER_PACKAGING),
+  item("WS_FOIL_10", "Aluminium Foil 10-roll", "packaging", "carton", 1_150, 900, 35, 2, SUPPLIER_PACKAGING),
 ];
 
 /* ---------------------------------------------------------------- helper --- */
@@ -70,6 +96,8 @@ function item(
   costRupees: number,
   stock: number,
   moq = 1,
+  /** The linked account paid for this line. Absent means own inventory. */
+  supplier?: string,
 ): CatalogItem {
   return {
     sku,
@@ -81,6 +109,7 @@ function item(
     cost_paise: rupees(costRupees),
     stock,
     moq,
+    ...(supplier === undefined ? {} : { supplier_account_id: supplier }),
   };
 }
 

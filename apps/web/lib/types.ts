@@ -41,6 +41,13 @@ export type TheatreEvent =
   | { type: "order"; order_id: string; amount_paise: number; cart: CartLine[] }
   | { type: "stepup"; link_url: string; reason: string }
   | { type: "payment"; status: "captured" | "failed" | "fallback"; detail: string; attempt: number }
+  | {
+      /** Razorpay Route: one payment, several sellers paid out of it. */
+      type: "split";
+      captured_paise: number;
+      commission_paise: number;
+      legs: { account: string; amount_paise: number }[];
+    }
   | { type: "merchant"; text: string }
   | { type: "note"; text: string }
   | { type: "done"; envelope: EnvelopeView; ledger_seq: number };

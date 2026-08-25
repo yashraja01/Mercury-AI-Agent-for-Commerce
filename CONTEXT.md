@@ -79,6 +79,7 @@ field instead.
 |---|---|---|
 | Buyer | Consumer's shopping agent | Restaurant/retail owner's procurement agent |
 | Mandate archetype | Recurring weekly envelope, Human-**Not**-Present | Large single-deal envelope, Human-Present step-up |
+| Settlement | Single payment, own inventory | **Route**: split across supplier linked accounts |
 | Revenue levers | Bundling, substitution, basket-building | Bulk tiers, MOQ, credit terms, multi-vendor basket |
 | Catalog seed | `QUICK_COMMERCE` in `packages/seed/src/catalogs.ts` | `B2B_PROCUREMENT`, same file |
 | Agent persona | `prompts/persona.quick-commerce.md` | `prompts/persona.b2b.md` |
@@ -94,8 +95,17 @@ type MerchantProfile = {
   max_discount_bps: number        // discount ceiling
   levers: ("bundle"|"substitute"|"bulk_tier"|"credit_terms")[]
   category_taxonomy: string[]
+  settlement?: {                  // Route. Dwaar never reads this.
+    mode: "route"
+    commission_bps: number
+    commission_account_id: string
+  }
 }
 ```
+
+`settlement` is the one field on the profile the gate ignores on purpose. How a
+captured rupee is divided afterwards is not an authorisation question, and
+putting it in front of Dwaar would be a category error.
 
 ## 6. Running it
 
@@ -111,7 +121,9 @@ npm run dev         # Mission Control on :3000
 | `npm run dev` | Mission Control + the buyer API on :3000 |
 | `npm run demo` | The whole path on a terminal, no browser, no key |
 | `npm run mcp:smoke` | Drives the MCP server over real stdio JSON-RPC (needs `npm run dev`) |
-| `npm test` | 176 tests. No API key, no network, no spend |
+| `npm run chaos` | Runs the failure-audit table F1-F7 and prints what it verified (needs `npm run dev`) |
+| `npm run chaos -- --reset` | Same, but re-seeds the demo bench first |
+| `npm test` | 193 tests. No API key, no network, no spend |
 | `npm run verify` | Re-walks the Sakshi chain independently |
 | `npm run build` | Packages, then `scripts/`, then the Next app |
 
@@ -128,7 +140,7 @@ packages/agent   negotiators, levers, tools, prompts, the Engine
 apps/web         Mission Control + buyer API + Agent Card + feed
 apps/mcp         MCP stdio server (thin client of apps/web)
 prompts/         system.core.md + three personas
-scripts/         seed, demo, verify-chain, mcp-smoke
+scripts/         seed, demo, verify-chain, mcp-smoke, chaos
 ```
 
 Paths in the app are anchored to the repo root, not `process.cwd()` — `next dev`
@@ -266,6 +278,22 @@ interface RazorpayPort {
   all seven failure scenarios work here with no network and no tunnel.
 - **`LiveRail`** (`RAIL_MODE=live`) — real `rzp_test_...` keys. Same interface.
 
+**The webhook secret is environment, not mode.** `RAZORPAY_WEBHOOK_SECRET` is
+read once and handed to whichever rail is in use, so setting it makes
+`/api/webhook/razorpay` verify genuine Razorpay deliveries even while
+`RAIL_MODE=fixture`. Unset in live mode the route answers `503 not_configured`
+rather than a signature mismatch — otherwise every real delivery would be
+recorded as a rejected webhook, and the ledger would fill with attacks that
+never happened.
+
+**Split settlement (Route).** A wholesale basket is one payment and several
+sellers. After capture the engine divides the money by what each supplier
+actually sold — largest remainder, so the legs sum to the capture exactly — and
+takes the platform commission off the top, so a supplier's share is never
+reduced by a fee it did not agree to. A transfer that fails does **not** unwind
+the capture; it is recorded and left for an operator. Quick-commerce sells its
+own inventory, so nothing splits.
+
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
 ## 13. Mission Control
@@ -279,8 +307,28 @@ One page, three panels, all spectators on the same run. The UI decides nothing;
 | Dwaar (द्वार) | **Agent quoted vs Dwaar computed**, then every rule with observed and limit | The product thesis as two numbers |
 | Sakshi (साक्षी) | Each entry with `prev_hash <- hash`, and a live `verify` | The chain, checkable in front of you |
 
-Controls: seven scenarios (four of which reproduce a failure-audit row), a
+Controls: eight scenarios (four of which reproduce a failure-audit row), a
 scripted/Claude agent switch, a freeze kill switch, and reset.
+
+The left column has a second view: the **Chaos Console**, which is the
+failure-audit table made executable. Each row injects its own fault and then
+checks the recovery -- the Sakshi events that row promises, plus the state that
+must not have moved. A row goes green only when every check holds, so a claim
+that stops being true goes red rather than staying written down. `npm run chaos`
+runs the identical rows headlessly against the same routes and exits non-zero on
+any failure; `apps/web/lib/chaos.ts` is the single implementation behind both.
+
+The webhook rows are deliberately not in-process: they arrive as real HTTP
+requests at `/api/webhook/razorpay`, signed (or mis-signed) the way Razorpay
+signs. A forged delivery that was only ever handed to a class has never been
+rejected as a *request*.
+
+The bench is finite — the demo mandate has eight debits and a full pass spends
+one. Rows that need a live order check that budget *before* injecting anything
+and report **blocked** rather than failed when it is gone, because a setup
+denied for lack of money looks exactly like the failure the row is testing.
+Reset re-seeds, and is always a button: it destroys the ledger, which is the one
+thing here meant to be trusted.
 
 Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
 

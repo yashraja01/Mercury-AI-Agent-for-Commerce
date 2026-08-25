@@ -92,13 +92,14 @@ export class Store {
       );
 
       CREATE TABLE IF NOT EXISTS orders (
-        order_id   TEXT PRIMARY KEY,
-        mandate_id TEXT NOT NULL,
-        token_id   TEXT NOT NULL,
-        cart_hash  TEXT NOT NULL,
-        amount     INTEGER NOT NULL,
-        status     TEXT NOT NULL,
-        payment_id TEXT
+        order_id       TEXT PRIMARY KEY,
+        mandate_id     TEXT NOT NULL,
+        token_id       TEXT NOT NULL,
+        cart_hash      TEXT NOT NULL,
+        amount         INTEGER NOT NULL,
+        status         TEXT NOT NULL,
+        payment_id     TEXT,
+        payment_status TEXT NOT NULL DEFAULT 'created'
       );
 
       CREATE TABLE IF NOT EXISTS holder_nonces (
@@ -116,6 +117,15 @@ export class Store {
         value TEXT NOT NULL
       );
     `);
+
+    // `payment_status` arrived with the webhook FSM (F5) and databases seeded
+    // before it exist in the wild. ALTER is the whole migration; SQLite has no
+    // "ADD COLUMN IF NOT EXISTS", so a second run throwing is the success case.
+    try {
+      this.#db.exec("ALTER TABLE orders ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'created'");
+    } catch {
+      /* column already present */
+    }
   }
 
   /* ------------------------------------------------------------- merchants */
@@ -408,6 +418,29 @@ export class Store {
       .run(status, paymentId ?? null, orderId);
   }
 
+  /**
+   * The payment's own status, which advances independently of the order's.
+   *
+   * Razorpay does not guarantee webhook ordering, so this column only ever
+   * moves forward -- the caller decides that with `advanceStatus`, and this
+   * method just persists the result (F5).
+   */
+  setPaymentStatus(orderId: string, paymentStatus: string, paymentId?: string): void {
+    this.#db
+      .prepare(
+        "UPDATE orders SET payment_status = ?, payment_id = COALESCE(?, payment_id) WHERE order_id = ?",
+      )
+      .run(paymentStatus, paymentId ?? null, orderId);
+  }
+
+  /** The order a Razorpay payment belongs to, for routing a webhook. */
+  orderIdForPayment(paymentId: string): string | undefined {
+    const row = this.#db
+      .prepare("SELECT order_id FROM orders WHERE payment_id = ?")
+      .get(paymentId) as { order_id: string } | undefined;
+    return row?.order_id;
+  }
+
   getOrder(orderId: string):
     | {
         order_id: string;
@@ -417,6 +450,7 @@ export class Store {
         amount: number;
         status: string;
         payment_id: string | null;
+        payment_status: string;
       }
     | undefined {
     return this.#db.prepare("SELECT * FROM orders WHERE order_id = ?").get(orderId) as
@@ -428,6 +462,7 @@ export class Store {
           amount: number;
           status: string;
           payment_id: string | null;
+          payment_status: string;
         }
       | undefined;
   }

@@ -230,6 +230,33 @@ async function settle(
     },
   });
 
+  if (outcome.kind === "CAPTURED") {
+    // A B2B basket is multi-vendor: the buyer paid once and two suppliers have
+    // to be paid out of it. Read the split back from the ledger rather than
+    // recomputing it, so the panel shows what was actually recorded.
+    const split = m.sakshi
+      .byEventType("SETTLEMENT_SPLIT")
+      .filter((e) => e.session_id === sessionId)
+      .at(-1);
+    const detail = split?.detail as
+      | {
+          captured_paise?: number;
+          commission_paise?: number;
+          legs?: { account: string; amount_paise: number }[];
+          failed?: boolean;
+        }
+      | undefined;
+
+    if (detail !== undefined && detail.failed !== true && detail.legs !== undefined) {
+      await emit({
+        type: "split",
+        captured_paise: detail.captured_paise ?? 0,
+        commission_paise: detail.commission_paise ?? 0,
+        legs: detail.legs,
+      });
+    }
+  }
+
   if (outcome.kind === "FAILED_FALLBACK_LINK") {
     await emit({
       type: "payment",
