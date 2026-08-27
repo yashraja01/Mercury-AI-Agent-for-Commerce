@@ -151,3 +151,62 @@ describe("Sakshi verify -- the auditability proof", () => {
     s.close();
   });
 });
+
+describe("the merchant-console events", () => {
+  it("chains BASKET_VALUED and finds it by type", () => {
+    const s = freshLedger();
+    seedThree(s);
+    s.append({
+      actor: { type: "merchant_agent", id: "agt_revenue" },
+      event_type: "BASKET_VALUED",
+      detail: {
+        merchant_id: "mch_quick",
+        baseline_paise: 482_000,
+        final_paise: 561_000,
+        uplift_paise: 79_000,
+        uplift_bps: 1_639,
+        levers_used: ["bundle"],
+      },
+    });
+
+    const found = s.byEventType("BASKET_VALUED");
+    expect(found.length).toBe(1);
+    expect(found[0]?.detail?.["uplift_paise"]).toBe(79_000);
+    expect(s.verify().ok).toBe(true);
+  });
+
+  it("records a policy change as a fact in the chain, not a side note", () => {
+    const s = freshLedger();
+    s.append({
+      actor: { type: "human", id: "mch_quick" },
+      event_type: "POLICY_CHANGED",
+      detail: {
+        merchant_id: "mch_quick",
+        changes: [{ field: "min_margin_bps", from: 1_500, to: 2_000 }],
+      },
+    });
+
+    const [entry] = s.byEventType("POLICY_CHANGED");
+    expect(entry?.actor.type).toBe("human");
+    expect(s.verify().ok).toBe(true);
+  });
+
+  it("keeps verifying once the new types are interleaved with the old", () => {
+    const s = freshLedger();
+    seedThree(s);
+    s.append({
+      actor: { type: "human", id: "mch_quick" },
+      event_type: "POLICY_CHANGED",
+      detail: { merchant_id: "mch_quick", changes: [] },
+    });
+    seedThree(s);
+    s.append({
+      actor: { type: "merchant_agent", id: "agt_revenue" },
+      event_type: "BASKET_VALUED",
+      detail: { merchant_id: "mch_quick", uplift_paise: 1 },
+    });
+
+    expect(s.count()).toBe(8);
+    expect(s.verify().ok).toBe(true);
+  });
+});

@@ -30,6 +30,23 @@ export interface MandateState {
   status: "active" | "closed";
 }
 
+/**
+ * An order row as stored. `merchant_id` and `created_at` are nullable because
+ * they arrived by migration and older rows predate them.
+ */
+export interface OrderRow {
+  order_id: string;
+  mandate_id: string;
+  token_id: string;
+  cart_hash: string;
+  amount: number;
+  status: string;
+  payment_id: string | null;
+  payment_status: string;
+  merchant_id: string | null;
+  created_at: string | null;
+}
+
 export type StockResult =
   | { ok: true; remaining: number }
   | { ok: false; reason: "INSUFFICIENT"; available: number }
@@ -125,6 +142,19 @@ export class Store {
       this.#db.exec("ALTER TABLE orders ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'created'");
     } catch {
       /* column already present */
+    }
+
+    // `merchant_id` and `created_at` arrived with the merchant console, which
+    // lists a merchant's own orders in the order they happened. Same idiom, and
+    // the same caveat: rows written before this migration keep NULL and show as
+    // unattributed until the next `npm run seed`. Backfilling is not possible --
+    // which merchant an old order belonged to is not recoverable from the row.
+    for (const col of ["merchant_id TEXT", "created_at TEXT"]) {
+      try {
+        this.#db.exec(`ALTER TABLE orders ADD COLUMN ${col}`);
+      } catch {
+        /* column already present */
+      }
     }
   }
 
@@ -403,13 +433,26 @@ export class Store {
     amount: Paise;
     status: string;
     payment_id?: string;
+    merchant_id?: string;
+    created_at?: string;
   }): void {
     this.#db
       .prepare(
-        "INSERT OR REPLACE INTO orders (order_id, mandate_id, token_id, cart_hash, amount, status, payment_id) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO orders " +
+          "(order_id, mandate_id, token_id, cart_hash, amount, status, payment_id, merchant_id, created_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(o.order_id, o.mandate_id, o.token_id, o.cart_hash, o.amount, o.status, o.payment_id ?? null);
+      .run(
+        o.order_id,
+        o.mandate_id,
+        o.token_id,
+        o.cart_hash,
+        o.amount,
+        o.status,
+        o.payment_id ?? null,
+        o.merchant_id ?? null,
+        o.created_at ?? new Date().toISOString(),
+      );
   }
 
   setOrderStatus(orderId: string, status: string, paymentId?: string): void {
@@ -441,30 +484,29 @@ export class Store {
     return row?.order_id;
   }
 
-  getOrder(orderId: string):
-    | {
-        order_id: string;
-        mandate_id: string;
-        token_id: string;
-        cart_hash: string;
-        amount: number;
-        status: string;
-        payment_id: string | null;
-        payment_status: string;
-      }
-    | undefined {
+  getOrder(orderId: string): OrderRow | undefined {
     return this.#db.prepare("SELECT * FROM orders WHERE order_id = ?").get(orderId) as
-      | {
-          order_id: string;
-          mandate_id: string;
-          token_id: string;
-          cart_hash: string;
-          amount: number;
-          status: string;
-          payment_id: string | null;
-          payment_status: string;
-        }
+      | OrderRow
       | undefined;
+  }
+
+  /**
+   * Recent orders, newest first.
+   *
+   * `rowid` rather than `created_at`, because rows written before that column
+   * existed have none, and insertion order is the truth we actually have. Pass
+   * a merchant to scope the list; omit it and you get every merchant's, which
+   * is what the demo bench wants and no merchant should ever see.
+   */
+  listOrders(opts: { merchantId?: string; limit?: number } = {}): OrderRow[] {
+    const limit = opts.limit ?? 50;
+    return opts.merchantId === undefined
+      ? (this.#db
+          .prepare("SELECT * FROM orders ORDER BY rowid DESC LIMIT ?")
+          .all(limit) as unknown as OrderRow[])
+      : (this.#db
+          .prepare("SELECT * FROM orders WHERE merchant_id = ? ORDER BY rowid DESC LIMIT ?")
+          .all(opts.merchantId, limit) as unknown as OrderRow[]);
   }
 
   /* ----------------------------------------------------- webhook dedupe ---- */

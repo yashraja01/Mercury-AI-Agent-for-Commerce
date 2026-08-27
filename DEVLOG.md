@@ -32,42 +32,66 @@
 | M6.5 | Levers, proof-of-holder, compensation | ☑ done | Goal 1 mechanised; buyer API signed; F2/F3 wired |
 | M7 | Chaos Console -- verify F1--F7 | ☑ done | 7/7 rows green; `npm run chaos` and a UI panel |
 | M8 | Hardening | ◐ part | Route (B2B) done; LiveRail verified as far as keys allow. Feed conformance, deploy, video outstanding |
+| M9 | Merchant console (Phase 2) | ☑ done | `/merchant`: revenue uplift, orders, editable policy, authority. `BASKET_VALUED` + `POLICY_CHANGED` in the chain |
 
 Blocked: —
 
 ## Start here next session
 
-**State:** M0-M7 committed and green, plus the first slice of M8. 193 tests,
-build clean, chain verifies, and all seven failure-audit rows verify against the
-running app. Nothing is half-finished.
+**State:** M0-M7 committed and green, the first slice of M8, and M9 (the
+merchant console) complete. 212 tests, build clean, chain verifies, all seven
+failure-audit rows verify against the running app, and `mcp:smoke` passes.
+Nothing is half-finished.
 
 **Sanity check before writing code:**
 
 ```bash
-npm install && npm run build && npm test    # expect 193 passed
+npm install && npm run build && npm test    # expect 212 passed
 npm run seed && npm run demo                # both verticals, terminal
 npm run dev                                 # then, elsewhere:
 npm run chaos                               # expect 7/7 rows verified
 npm run mcp:smoke
 ```
 
-**The next work, in the order I would do it.** M8 is part done: Route landed,
-and the webhook route is wired to a real secret. What is left needs either an
-account we do not have or a human.
+**The merchant console, checked in four commands** (needs `npm run dev`). This
+is also the demo beat: the same cart, priced by two different policies.
+
+```bash
+curl -s -XPOST localhost:3000/api/negotiate -H 'content-type: application/json' \
+  -d '{"scenario":"bulk","mode":"scripted"}' >/dev/null
+curl -s 'localhost:3000/api/merchant/summary?merchant_id=mch_bulk'
+# expect uplift_paise 180400, uplift_bps 566, levers [bulk_tier]
+
+curl -s -XPOST localhost:3000/api/merchant/profile -H 'content-type: application/json' \
+  -d '{"merchant_id":"mch_quick","min_margin_bps":5500}'
+# then re-run `topup`: the same cart costs 147750 instead of 137750
+```
+
+Then open <http://localhost:3000/merchant>. Reset restores the seeded policy.
+
+**The next work, in the order I would do it.** M8 is part done: Route landed and
+the webhook route is wired to a real secret; M9 added the merchant console.
+
+The brief leads with revenue and treats *explainable, bounded, gated + audit +
+one failure* as the bar. The deliverable is a **5-10 minute video**, not a
+deployment — which is why deploy has been cut rather than deferred.
 
 | # | Task | Why now | Size |
 |---|---|---|---|
-| 1 | Feed + Agent Card conformance (`npm run conformance`) | The feed claims UCP/ACP shape and nothing checks it. Cheap, and it must also assert `supplier_account_id` never leaks into a public feed | small |
-| 2 | `npm run live:smoke` against real `rzp_test_` keys | LiveRail's HTTP calls have never run. The webhook half is now proven; the API half is not | small, **needs a Razorpay account** |
-| 3 | Deploy: Dockerfile, `/api/health`, SQLite volume notes | Nothing is deployed, and SQLite on a container needs a real disk or the ledger dies with the pod | medium, **needs a hosting account** |
-| 4 | Write `BasketValue` into Sakshi + show uplift | The Goal 1 metric exists on the negotiation result and nobody can see it | small |
-| 5 | Lever tools for `LlmRevenueAgent` | With Claude driving, Goal 1 reverts to a flat discount; the scripted agent has levers and the LLM one does not | medium |
-| 6 | Run the LLM path once with a real key | `LlmRevenueAgent` has **never executed** | small, needs `ANTHROPIC_API_KEY` |
-| 7 | Demo video | A runbook exists in nobody's head but mine | **needs a human** |
+| 1 | Lever tools for `LlmRevenueAgent` | With Claude driving, Goal 1 reverts to a flat discount; the scripted agent has levers and the LLM one does not. The console now *shows* uplift, so an empty lever table on the Claude path is visible | medium |
+| 2 | Run the LLM path once with a real key | `LlmRevenueAgent` has **never executed** | small, needs `ANTHROPIC_API_KEY` |
+| 3 | Feed + Agent Card conformance (`npm run conformance`) | The feed claims UCP/ACP shape and nothing checks it. Must also assert `supplier_account_id` never leaks into a public feed | small |
+| 4 | Demo video | A runbook exists in nobody's head but mine | **needs a human** |
+| 5 | `npm run live:smoke` against real `rzp_test_` keys | LiveRail's HTTP calls have never run. The webhook half is proven; the API half is not | small, **needs a Razorpay account** |
+| ~~x~~ | ~~Deploy: Dockerfile, health, SQLite volume~~ | **Cut.** No judge visits a URL; the deliverable is a video | — |
+| ~~x~~ | ~~Write `BasketValue` into Sakshi + show uplift~~ | **Done in M9.** | — |
 
 **Known gaps, stated plainly:**
 
-- `LlmRevenueAgent` is unproven against the real API (item 6).
+- `LlmRevenueAgent` is unproven against the real API (item 2), and it has no
+  lever tools (item 1). The merchant console now *shows* per-lever uplift, so on
+  the Claude path that table will read empty until item 1 lands — a visible gap
+  rather than a quiet one.
 - `inferCart` is keyword matching where buyer intent enters the system. It fails
   safe -- a misread costs a negotiation round, never money -- but it is the
   weakest link in the default path.
@@ -110,6 +134,24 @@ account we do not have or a human.
 - **Do not use Python single-quoted strings to write regexes into source.** `\b`
   becomes a literal backspace byte and the pattern silently stops matching. Use
   raw strings, or the Write/Edit tools.
+- **A policy edit outlives the demo that made it.** `mercury.db` is durable and
+  `npm run demo` does not re-seed, so a margin floor raised for one beat is
+  still raised an hour later, and a chaos row failing for that reason looks
+  exactly like a regression. The Policy panel shows a **modified** badge per
+  drifted field and the header count says how many, so this is visible rather
+  than merely known. Reset restores the seed.
+- **Two dev servers will both answer, and they will disagree.** Killing the dev
+  server by process leaves the npm wrapper's child alive holding :3000, so the
+  next `npm run dev` quietly takes :3001. Both then hold their own SQLite handle
+  and their own Engine singleton against the *same file*, and `mcp:smoke` fails
+  with a 500 that looks like a code bug. Kill by port (see above) and confirm
+  the port is free before restarting.
+- **A raised margin floor reprices; it does not refuse.** Dwaar repairs the
+  proposal to the lowest legal figure, so the basket gets dearer rather than
+  denied — a denial only follows if the repaired figure breaks another rule. The
+  seeded quick-commerce catalogue tops out near 6667 bps of margin, so a floor
+  below ~50% does not bind at all. `topup` at 15% and 30% both cost ₹1,377.50;
+  at 55% the same cart costs ₹1,477.50.
 
 ## Key decisions
 
@@ -138,6 +180,10 @@ account we do not have or a human.
 | D18 | 2026-08-23 | The delegated agent's **public key lives inside the signed mandate** | The human is not authorising "an agent", they are authorising exactly one key. It makes proof-of-holder verifiable by anyone holding the mandate -- no registry lookup, no shared secret, no trust in our own database -- and it means a stolen mandate id buys nothing | A separate agent-key registry (one more thing to keep in sync, and it moves trust into our DB); signing with the principal's own key (that is the human's key, not the agent's) |
 | D19 | 2026-08-23 | `bundle` needs the buyer's invitation; `bulk_tier` and `substitute` do not | A tier and a substitution answer what the buyer asked for. A bundle changes *what is in the cart*, and an agent that appends a line to every basket is padding -- which the persona prompt already forbids, so the code should too | Always bundling (higher AOV, bad faith); never bundling (Goal 1 stays unimplemented) |
 
+| D23 | 2026-08-27 | A **second screen** for the merchant, rather than more panels on Mission Control | Mission Control is a god's-eye instrument: it shows buyer, merchant and gate at once, which is a seat nobody in the story occupies. The brief's headline is *grow the merchant's revenue*, and a merchant does not watch their own agent negotiate in a theatre — they ask what it earned and what it may do. Two screens make that two questions instead of one crowded answer | A scoreboard strip on Mission Control (shows the number, still nobody's seat); a full settings product with CRUD (form-filling does not survive a 10-minute video) |
+| D24 | 2026-08-27 | The merchant console's revenue figures are **summed from Sakshi**, not from a counter | If a merchant's uplift total and the ledger could disagree, the chain would be a copy of the truth rather than the truth. Recomputing per request costs nothing at this scale and means the number on screen is the number an outside party derives independently | A `basket_value` table in the store (fast, and a second source of truth); a running total on the mandate row (same problem, less honest) |
+| D25 | 2026-08-27 | A policy edit is itself a Sakshi event (`POLICY_CHANGED`), and `zPolicyPatch` admits **four fields** | Two separate arguments. The event: a merchant loosening its own margin floor is precisely what an audit trail exists to record — without it, a cart approved at 8% under a 15% floor reads as a gate failure rather than a policy change made a minute earlier. The narrow patch: `category_taxonomy` feeds `SCOPE.CATEGORY_ALLOWLIST`, so accepting a whole `MerchantProfile` from a form would let a settings page widen a scope allowlist | Accepting a full profile and validating it (one forgotten field is an escalation); logging policy changes to stdout (unverifiable, and gone on restart); no logging at all (the demo beat becomes unexplainable) |
+
 ## Failure-recovery audit
 
 > One row per engineered failure. Verified only when the recovery is observed
@@ -155,6 +201,58 @@ account we do not have or a human.
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+
+### 2026-08-27 — M9 the merchant console
+
+The app had one screen and it belonged to nobody. Mission Control shows buyer,
+merchant and gate at once — a seat no participant occupies. Meanwhile the thing
+the brief actually leads with, *grow the merchant's revenue*, was computed on
+every negotiation and thrown away: `BasketValue` sat on the negotiation result
+and `run.ts` used `result.reply` beside it without ever reading `result.value`.
+
+`/merchant` is the merchant's own seat. Four panels: what the agent earned, what
+it sold, what it is allowed to do, and how much authority the buyer has left.
+
+**Goal 1 is now a number on a screen.** `BASKET_VALUED` joins the ledger,
+carrying baseline, final, uplift and the levers used; the Revenue panel sums
+those entries per merchant. It is written only when the gate actually approved
+something — an uplift on a denied basket is a number the agent hoped for, and
+recording it beside real ones would make the console lie in the merchant's
+favour. Verified live on the B2B path: ₹31,860 asked, ₹33,664 approved,
+**+₹1,804 (+5.66%)**, attributed to `bulk_tier`.
+
+**The Policy panel writes through to the gate.** `Engine.propose` re-reads the
+profile per evaluation, so a change lands on the next negotiation with no
+restart and no cache. Each control is labelled with the rule it drives. The
+edit itself is appended as `POLICY_CHANGED` with before and after (D25).
+
+Measured, not assumed: the same `topup` cart costs ₹1,377.50 at a 15% floor and
+₹1,477.50 at 55%. A raised floor **reprices** rather than refusing — Dwaar
+repairs to the lowest legal figure — which is a better demonstration than a
+denial, and is not what I had planned for. The slider's first range topped out
+at exactly 50%, the boundary where the seeded catalogue starts to bind, so the
+control could not reach the point where anything happened; max is now 7500 bps.
+
+Attempted escalation through the write path, and it was stripped: posting
+`vertical` and `category_taxonomy` alongside a legitimate `min_margin_bps`
+changed only the margin. `zPolicyPatch` admits four fields and copies the rest;
+nothing spreads caller keys onto a profile.
+
+Also landed:
+- `orders.merchant_id` and `orders.created_at`, by the same ALTER-throws-is-
+  success idiom as `payment_status`. Rows predating the migration stay NULL and
+  are excluded from every merchant-scoped list rather than shown to the wrong
+  merchant.
+- `store.listOrders({ merchantId, limit })`, ordered by `rowid` — insertion
+  order is the truth we have for rows with no `created_at`.
+- Extracted `TabStrip`, `Pill` and `EnvelopeMeter` into `components/ui/` at
+  their third use, not their second. Deleted `ChaosPanel`'s private `rupees()`,
+  which printed `Rs ` where the rest of the app prints `₹`.
+- `bps()` in `lib/format.ts` — the first percentage helper in the codebase.
+
+212 tests (was 193), build clean, chain verifies, 7/7 chaos rows, `mcp:smoke`
+green. Two new gotchas recorded: policy edits outlive the demo that made them,
+and two dev servers will both answer while disagreeing.
 
 ### 2026-08-25 — M8 (part): Route, the bench, and a real webhook secret
 

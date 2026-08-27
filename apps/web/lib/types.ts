@@ -83,3 +83,56 @@ export interface LedgerEntry {
   envelope?: { reserved_paise: number; consumed_paise: number; remaining_paise: number };
   detail?: Record<string, unknown>;
 }
+
+/* ------------------------------------------------------ the merchant console */
+
+/**
+ * A merchant's policy, plus which of it no longer matches the seed.
+ *
+ * `modified` exists because the bench is durable: a margin floor raised for one
+ * demo beat is still raised an hour later, and a chaos row failing for that
+ * reason looks exactly like a regression. Naming the drift on screen is cheaper
+ * than explaining it afterwards.
+ */
+export interface PolicyView {
+  profile: MerchantProfileView;
+  modified: string[];
+  seeded: MerchantProfileView | null;
+}
+
+export interface MerchantProfileView {
+  merchant_id: string;
+  display_name: string;
+  vertical: string;
+  min_margin_bps: number;
+  max_discount_bps: number;
+  levers: string[];
+  category_taxonomy: string[];
+  settlement?: { mode: string; commission_bps: number; commission_account_id: string };
+}
+
+export interface LeverEarning {
+  lever: string;
+  baskets: number;
+  uplift_paise: number;
+}
+
+export interface OrderView {
+  order_id: string;
+  mandate_id: string;
+  amount_paise: number;
+  status: string;
+  payment_status: string;
+  created_at: string | null;
+}
+
+export interface MerchantSummary {
+  merchant_id: string;
+  baskets: number;
+  baseline_paise: number;
+  final_paise: number;
+  uplift_paise: number;
+  uplift_bps: number;
+  levers: LeverEarning[];
+  orders: OrderView[];
+}

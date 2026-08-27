@@ -65,6 +65,32 @@ export const zMerchantProfile = z.object({
 });
 export type MerchantProfile = z.infer<typeof zMerchantProfile>;
 
+/**
+ * What a merchant may change about its own profile, from its own console.
+ *
+ * Deliberately narrower than `zMerchantProfile`. Identity (`merchant_id`,
+ * `display_name`, `vertical`) is not policy, and `category_taxonomy` feeds
+ * `SCOPE.CATEGORY_ALLOWLIST` -- a form that could widen a scope allowlist would
+ * be a privilege escalation wearing a settings page. `commission_account_id` is
+ * likewise off the table: where the platform's cut lands is not something the
+ * merchant being charged gets to redirect.
+ *
+ * The bounds are tighter than `zBps` too. A discount ceiling above 100% is not
+ * a policy, it is a typo, and the gate should not have to be the thing that
+ * catches it.
+ */
+export const zPolicyPatch = z.object({
+  merchant_id: z.string().min(1),
+  /** Price may never fall below cost * (1 + min_margin_bps/10000). Up to 5x cost. */
+  min_margin_bps: z.number().int().min(0).max(50_000).optional(),
+  /** Discount off list. Cannot exceed the whole price. */
+  max_discount_bps: z.number().int().min(0).max(10_000).optional(),
+  levers: z.array(zLever).optional(),
+  /** Route commission only. The account it lands in is not editable here. */
+  commission_bps: z.number().int().min(0).max(10_000).optional(),
+});
+export type PolicyPatch = z.infer<typeof zPolicyPatch>;
+
 export const zCatalogItem = z.object({
   sku: z.string().min(1),
   merchant_id: z.string().min(1),

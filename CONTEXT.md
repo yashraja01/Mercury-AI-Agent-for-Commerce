@@ -112,18 +112,18 @@ putting it in front of Dwaar would be a category error.
 ```bash
 npm install
 npm run seed        # fresh DB + mandates + buyer-wallet.json
-npm run dev         # Mission Control on :3000
+npm run dev         # Mission Control + merchant console on :3000
 ```
 
 | Command | Does |
 |---|---|
 | `npm run seed` | Wipes and re-seeds `mercury.db`; mints `buyer-wallet.json` |
-| `npm run dev` | Mission Control + the buyer API on :3000 |
+| `npm run dev` | Mission Control, the merchant console and the buyer API on :3000 |
 | `npm run demo` | The whole path on a terminal, no browser, no key |
 | `npm run mcp:smoke` | Drives the MCP server over real stdio JSON-RPC (needs `npm run dev`) |
 | `npm run chaos` | Runs the failure-audit table F1-F7 and prints what it verified (needs `npm run dev`) |
 | `npm run chaos -- --reset` | Same, but re-seeds the demo bench first |
-| `npm test` | 193 tests. No API key, no network, no spend |
+| `npm test` | 212 tests. No API key, no network, no spend |
 | `npm run verify` | Re-walks the Sakshi chain independently |
 | `npm run build` | Packages, then `scripts/`, then the Next app |
 
@@ -137,7 +137,7 @@ packages/dwaar   the gate: one pure evaluate()
 packages/rail    RazorpayPort -> FixtureRail | LiveRail
 packages/seed    catalogue + mandate fixtures, buyer wallet
 packages/agent   negotiators, levers, tools, prompts, the Engine
-apps/web         Mission Control + buyer API + Agent Card + feed
+apps/web         Mission Control + merchant console + buyer API + Card + feed
 apps/mcp         MCP stdio server (thin client of apps/web)
 prompts/         system.core.md + three personas
 scripts/         seed, demo, verify-chain, mcp-smoke, chaos
@@ -176,7 +176,7 @@ database.
 | `store` | Mutable working state: catalogue, mandates, tokens, orders | Touch the Sakshi chain |
 | `seed` | Catalogue + mandate fixtures for both verticals | Contain logic of any kind |
 | `agent` | Negotiation, revenue levers, tool schemas, prompts, the Engine | Compute a final price or touch a key |
-| `web` | Mission Control + the buyer-facing API, feed and Agent Card | Decide anything; it is a spectator |
+| `web` | Mission Control, the merchant console, the buyer-facing API, feed and Agent Card | Decide anything about *money*. The merchant console sets policy; the gate still applies it |
 | `mcp` | Buyer transport over stdio | Accept a price, or hold state of its own |
 
 ## 9. The negotiator port
@@ -296,9 +296,20 @@ own inventory, so nothing splits.
 
 Every test runs against `FixtureRail`. `LiveRail` gets one smoke test.
 
-## 13. Mission Control
+## 13. Two screens
 
-One page, three panels, all spectators on the same run. The UI decides nothing;
+The app has two seats at the same system, switched from the header nav. They
+share one store, one ledger, one rail — the difference is only whose question is
+being answered.
+
+| Screen | Seat | Answers |
+|---|---|---|
+| `/` Mission Control | the observer | *Did the gate decide correctly, and can I check?* |
+| `/merchant` | the merchant | *What did my agent earn me, and what is it allowed to do?* |
+
+### Mission Control
+
+Three panels, all spectators on the same run. The page decides nothing;
 `scripts/demo.ts` drives the identical path with the browser closed.
 
 | Panel | Shows | Why it exists |
@@ -331,6 +342,42 @@ Reset re-seeds, and is always a button: it destroys the ledger, which is the one
 thing here meant to be trusted.
 
 Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
+
+### The merchant console
+
+Four panels, and the only screen in the app that *decides* anything.
+
+| Panel | Shows | Why it exists |
+|---|---|---|
+| Revenue | Buyer asked vs gate approved, **uplift in ₹ and bps**, per-lever attribution | Goal 1, measured rather than asserted |
+| Orders | Recent orders, order status beside Razorpay's payment status | The two advance independently (F5) |
+| Policy | Margin floor, discount ceiling, lever toggles, Route commission — **editable** | Goal 3 made touchable |
+| Authority | Per-mandate reserved / consumed / remaining, debits used | Both limits bind; either can run out first |
+
+Every figure in Revenue is summed from `BASKET_VALUED` entries in the chain, not
+from a counter kept somewhere convenient — so the number the merchant sees is
+the number an outside party reaches by walking the ledger. If those two could
+disagree, the audit trail would be a copy of the truth rather than the truth.
+
+**The Policy panel writes through.** `Engine.propose` re-reads the profile on
+every evaluation, so a change lands on the next negotiation with no restart and
+no cache to invalidate — a margin floor you must redeploy to move is a constant,
+not a control. Each field is labelled with the Dwaar rule it drives
+(`MARGIN.FLOOR_BREACH`, `DISCOUNT.BPS_CAP`), and **the change itself is appended
+to Sakshi as `POLICY_CHANGED`** with before and after. A merchant loosening its
+own floor is exactly what an audit trail is for; without that entry, a cart
+approved at 8% under a 15% floor would read as a gate failure rather than a
+policy change made a minute earlier.
+
+What a raised floor actually does is reprice, not refuse: Dwaar repairs the
+proposal to the lowest legal figure and the basket gets dearer. A denial only
+follows when that new figure breaks something else.
+
+**A merchant may not edit its own identity or `category_taxonomy`.** The
+taxonomy feeds `SCOPE.CATEGORY_ALLOWLIST`, so a form that could widen it would
+be a privilege escalation wearing a settings page. `zPolicyPatch` admits four
+fields and copies the rest; there is no spread of caller-supplied keys anywhere
+in the write path.
 
 ## 14. Money rule
 

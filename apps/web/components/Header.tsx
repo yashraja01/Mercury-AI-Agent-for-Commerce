@@ -1,60 +1,39 @@
 "use client";
 
-import { rupees } from "@/lib/format";
-import type { EnvelopeView, StateView } from "@/lib/types";
+import Link from "next/link";
+
+import { EnvelopeMeter, envelopeLabel } from "@/components/ui/EnvelopeMeter";
+import { Pill } from "@/components/ui/Pill";
+import type { StateView } from "@/lib/types";
 
 /**
- * The board's top rail: what mode we are in, what authority is left, and the
- * one control that stops everything.
+ * The board's top rail: where you are, what mode we are in, what authority is
+ * left, and the one control that stops everything.
+ *
+ * Shared by both pages. Mission Control watches the gate decide; the merchant
+ * console owns the policy it decides by. Rail mode, envelopes, Reset and Freeze
+ * belong to both, so they live here rather than in either page.
  */
 
-function EnvelopeMeter({ envelope, label }: { envelope: EnvelopeView; label: string }) {
-  const used =
-    envelope.reserved_paise === 0
-      ? 0
-      : Math.min(100, (envelope.consumed_paise / envelope.reserved_paise) * 100);
+const PAGES = [
+  { href: "/", id: "mission", label: "Mission Control" },
+  { href: "/merchant", id: "merchant", label: "Merchant" },
+] as const;
 
-  return (
-    <div className="min-w-0 flex-1">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="eyebrow truncate">{label}</span>
-        <span className="figures text-[11px] text-paper-dim">
-          {envelope.txn_count}/{envelope.max_txn_count} debits
-        </span>
-      </div>
-
-      {/* The bar reads left-to-right as spent; what remains is authority the
-          agent still holds. Brass for spent, because Dwaar released it. */}
-      <div className="mt-1.5 h-[6px] w-full bg-ink-sunk ring-1 ring-rule">
-        <div
-          className="h-full bg-brass transition-[width] duration-500 ease-out"
-          style={{ width: `${used}%` }}
-        />
-      </div>
-
-      <div className="mt-1.5 flex items-baseline justify-between gap-3">
-        <span className="figures text-[13px] text-paper">
-          {rupees(envelope.remaining_paise)}
-          <span className="ml-1.5 text-[11px] text-paper-faint">left</span>
-        </span>
-        <span className="figures text-[11px] text-paper-faint">
-          of {rupees(envelope.reserved_paise)}
-        </span>
-      </div>
-    </div>
-  );
-}
+export type PageId = (typeof PAGES)[number]["id"];
 
 export function Header({
   state,
   busy,
   onFreeze,
   onReset,
+  current,
 }: {
   state: StateView | null;
   busy: boolean;
   onFreeze: (frozen: boolean) => void;
   onReset: () => void;
+  current: PageId;
 }) {
   const frozen = state?.frozen ?? false;
 
@@ -71,12 +50,13 @@ export function Header({
             </p>
           </div>
 
-          <span
-            className={`figures shrink-0 border px-2 py-1 text-[10px] uppercase tracking-[0.14em] ${
+          <Pill
+            size="md"
+            className={
               state?.rail_mode === "live"
                 ? "border-vermilion-dim text-vermilion"
                 : "border-rule-bright text-paper-dim"
-            }`}
+            }
             title={
               state?.rail_mode === "live"
                 ? "Live Razorpay test keys"
@@ -84,7 +64,25 @@ export function Header({
             }
           >
             rail: {state?.rail_mode ?? "..."}
-          </span>
+          </Pill>
+
+          {/* Two seats at the same system: the observer's, and the merchant's. */}
+          <nav className="flex items-center gap-1 border border-rule p-0.5">
+            {PAGES.map((p) => (
+              <Link
+                key={p.id}
+                href={p.href}
+                aria-current={current === p.id ? "page" : undefined}
+                className={`px-3 py-1 font-mono text-[11px] uppercase tracking-[0.12em] transition-colors ${
+                  current === p.id
+                    ? "bg-rule text-paper"
+                    : "text-paper-faint hover:text-paper-dim"
+                }`}
+              >
+                {p.label}
+              </Link>
+            ))}
+          </nav>
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col gap-5 sm:flex-row">
@@ -92,7 +90,7 @@ export function Header({
             <EnvelopeMeter
               key={e.mandate_id}
               envelope={e}
-              label={e.mandate_id.replace("mnd_", "").replace(/_/gu, " ")}
+              label={envelopeLabel(e.mandate_id)}
             />
           ))}
         </div>

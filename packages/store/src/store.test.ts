@@ -233,3 +233,63 @@ describe("catalog", () => {
     s.close();
   });
 });
+
+describe("order history", () => {
+  function order(s: Store, id: string, merchantId: string | undefined, amount: number): void {
+    s.putOrder({
+      order_id: id,
+      mandate_id: "mnd_x",
+      token_id: `tok_${id}`,
+      cart_hash: "h",
+      amount: paise(amount),
+      status: "created",
+      ...(merchantId === undefined ? {} : { merchant_id: merchantId }),
+    });
+  }
+
+  it("lists newest first", () => {
+    const s = store();
+    order(s, "ord_1", "mch_demo", 100);
+    order(s, "ord_2", "mch_demo", 200);
+    order(s, "ord_3", "mch_demo", 300);
+
+    expect(s.listOrders().map((o) => o.order_id)).toEqual(["ord_3", "ord_2", "ord_1"]);
+    s.close();
+  });
+
+  it("scopes to one merchant, because a merchant may not see another's orders", () => {
+    const s = store();
+    order(s, "ord_1", "mch_demo", 100);
+    order(s, "ord_2", "mch_other", 200);
+
+    expect(s.listOrders({ merchantId: "mch_demo" }).map((o) => o.order_id)).toEqual(["ord_1"]);
+    expect(s.listOrders().length).toBe(2);
+    s.close();
+  });
+
+  it("honours the limit", () => {
+    const s = store();
+    for (let i = 0; i < 5; i++) order(s, `ord_${i}`, "mch_demo", 100);
+    expect(s.listOrders({ limit: 2 }).length).toBe(2);
+    s.close();
+  });
+
+  it("stamps created_at when the caller does not", () => {
+    const s = store();
+    order(s, "ord_1", "mch_demo", 100);
+    const row = s.getOrder("ord_1");
+    expect(row?.created_at).toBeTypeOf("string");
+    expect(Number.isNaN(Date.parse(row?.created_at ?? ""))).toBe(false);
+    s.close();
+  });
+
+  it("leaves an unattributed order out of every merchant-scoped list", () => {
+    const s = store();
+    order(s, "ord_legacy", undefined, 100);
+
+    expect(s.getOrder("ord_legacy")?.merchant_id).toBeNull();
+    expect(s.listOrders({ merchantId: "mch_demo" })).toEqual([]);
+    expect(s.listOrders().map((o) => o.order_id)).toEqual(["ord_legacy"]);
+    s.close();
+  });
+});

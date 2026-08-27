@@ -128,6 +128,30 @@ export async function runScenario(
 
   const accepted = bridge.accepted();
 
+  /*
+   * What the levers were worth, into the chain.
+   *
+   * Only when something was actually approved: an uplift on a basket the gate
+   * denied is not revenue, it is a number the agent hoped for, and recording it
+   * beside real ones would make the merchant console lie in the merchant's
+   * favour. Goal 1 is measured, not asserted -- so it is measured on outcomes.
+   */
+  if (result.value !== undefined && accepted !== undefined && accepted.kind !== "DENIED") {
+    m.sakshi.append({
+      actor: { type: "merchant_agent", id: "agt_revenue" },
+      event_type: "BASKET_VALUED",
+      session_id: sessionId,
+      detail: {
+        merchant_id: scenario.merchant_id,
+        baseline_paise: result.value.baseline_paise,
+        final_paise: result.value.final_paise,
+        uplift_paise: result.value.uplift_paise,
+        uplift_bps: result.value.uplift_bps,
+        levers_used: result.value.levers_used,
+      },
+    });
+  }
+
   if (accepted !== undefined && accepted.kind !== "DENIED") {
     await emit({
       type: "order",

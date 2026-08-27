@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { rupees } from "@/lib/format";
+import { TabStrip } from "./ui/TabStrip";
 import type { ScenarioView, TheatreEvent } from "@/lib/types";
 
 /**
@@ -287,28 +288,27 @@ export function Theatre({
             {running ? "Negotiating…" : "Run scenario"}
           </button>
 
-          <div className="flex items-center gap-1 border border-rule p-0.5">
-            {(["scripted", "llm"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => onMode(m)}
-                disabled={running || (m === "llm" && !llmAvailable)}
-                title={
-                  m === "llm" && !llmAvailable
-                    ? "Set ANTHROPIC_API_KEY to let Claude make the offers"
-                    : m === "scripted"
-                      ? "Deterministic agent. No API key, no network."
-                      : "Claude negotiates through the same tools and the same gate."
-                }
-                className={`px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.12em] transition-colors disabled:opacity-30 ${
-                  mode === m ? "bg-rule text-paper" : "text-paper-faint hover:text-paper-dim"
-                }`}
-              >
-                {m === "llm" ? "Claude" : "Scripted"}
-              </button>
-            ))}
-          </div>
+          <TabStrip
+            size="sm"
+            value={mode}
+            onChange={onMode}
+            disabled={running}
+            tabs={[
+              {
+                id: "scripted",
+                label: "Scripted",
+                title: "Deterministic agent. No API key, no network.",
+              },
+              {
+                id: "llm",
+                label: "Claude",
+                disabled: !llmAvailable,
+                title: llmAvailable
+                  ? "Claude negotiates through the same tools and the same gate."
+                  : "Set ANTHROPIC_API_KEY to let Claude make the offers",
+              },
+            ]}
+          />
         </div>
       </div>
 

@@ -327,6 +327,7 @@ export class Engine {
       cart_hash: hash,
       amount: decision.computed_paise,
       status: "created",
+      merchant_id: profile.merchant_id,
     });
 
     this.#log("ORDER_CREATED", {

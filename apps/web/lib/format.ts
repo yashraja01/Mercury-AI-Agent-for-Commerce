@@ -23,6 +23,20 @@ export function paiseExact(p: number): string {
   return `${new Intl.NumberFormat("en-IN").format(p)} paise`;
 }
 
+/**
+ * Basis points as a percentage. `1500` -> `15%`, `1825` -> `18.25%`.
+ *
+ * Trailing zeros are trimmed because a margin floor of exactly 15% should read
+ * as "15%", not "15.00%" — the extra digits imply a precision the merchant did
+ * not set. Pass `sign` for a figure that is meaningfully positive or negative,
+ * like an uplift.
+ */
+export function bps(n: number, opts?: { sign?: boolean }): string {
+  const pct = n / 100;
+  const body = `${Number(pct.toFixed(2))}%`;
+  return opts?.sign === true && n > 0 ? `+${body}` : body;
+}
+
 export function shortHash(h: string, n = 10): string {
   return h.slice(0, n);
 }

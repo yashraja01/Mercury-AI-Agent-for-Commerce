@@ -29,6 +29,25 @@ export const EVENT_TYPES = [
   "ENVELOPE_RESIDUAL_RELEASED",
   "CIRCUIT_FROZEN",
   "CIRCUIT_UNFROZEN",
+  /**
+   * What the revenue levers were worth on one negotiation: the basket the buyer
+   * asked for at ordinary pricing, against what the gate actually approved.
+   *
+   * It sits in the chain rather than in a metrics table because a merchant's
+   * claim to have grown a basket should be as checkable as its claim not to
+   * have overcharged. An uplift figure nobody can audit is marketing.
+   */
+  "BASKET_VALUED",
+  /**
+   * A merchant changed its own policy: margin floor, discount ceiling, which
+   * levers are permitted, or the Route commission.
+   *
+   * A merchant loosening its own margin floor is exactly the kind of thing an
+   * audit trail exists to record. Without this, a cart approved at 8% margin
+   * under a 15% floor would look like a gate failure rather than a policy
+   * change made a minute earlier.
+   */
+  "POLICY_CHANGED",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

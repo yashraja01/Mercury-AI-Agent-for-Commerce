@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { BenchStatus, ChaosResult, ChaosRow } from "@/lib/chaos-types";
+import { rupees } from "@/lib/format";
+import { Pill } from "./ui/Pill";
 
 /**
  * The Chaos Console.
@@ -37,9 +39,6 @@ const PILL: Record<Status, { text: string; className: string }> = {
   fail: { text: "failed", className: "border-vermilion text-vermilion" },
   blocked: { text: "bench spent", className: "border-brass text-brass" },
 };
-
-const rupees = (p: number): string =>
-  `Rs ${(p / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** The bench's remaining budget, stated before it becomes a confusing red row. */
 function Bench({
@@ -155,11 +154,7 @@ function Row({
           ) : null}
         </div>
 
-        <span
-          className={`figures shrink-0 border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] ${pill.className}`}
-        >
-          {pill.text}
-        </span>
+        <Pill className={pill.className}>{pill.text}</Pill>
 
         <button
           type="button"
