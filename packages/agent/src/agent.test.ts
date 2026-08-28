@@ -16,9 +16,17 @@ import { Store } from "@mercury/store";
 import { Engine } from "./engine.js";
 import { gateVia } from "./bridge.js";
 import type { NegotiatorContext } from "./negotiator.js";
-import { ScriptedRevenueAgent, inferCart } from "./scripted-agent.js";
+import { inferCart, ordinaryUnit } from "./basket.js";
+import { ScriptedRevenueAgent } from "./scripted-agent.js";
 import { personaFor, systemPrompt } from "./prompts.js";
-import { priceFloor, quoteTotal, revenueTools, searchCatalog } from "./tools.js";
+import {
+  type RunnableTool,
+  priceFloor,
+  quoteTotal,
+  revenueTools,
+  searchCatalog,
+} from "./tools.js";
+import { LlmRevenueAgent, type LlmOptions } from "./llm-agent.js";
 
 /**
  * The agent, end to end, with no API key and no network.
@@ -204,9 +212,12 @@ describe("the shared tool surface", () => {
     });
 
     expect(tools.map((t) => t.name).sort()).toEqual([
+      "bulk_tier_quote",
+      "find_substitute",
       "price_floor",
       "search_catalog",
       "submit_offer",
+      "suggest_bundle",
     ]);
     for (const tool of tools) {
       expect(tool.strict).toBe(true);
@@ -669,5 +680,251 @@ describe("quoteTotal", () => {
       { sku: "B", qty: 2, offer_unit_paise: paise(500) },
     ];
     expect(quoteTotal(lines)).toBe(3 * 1_999 + 2 * 500);
+  });
+});
+
+/* ------------------------------------------------------- the model's path --- */
+
+/**
+ * `LlmRevenueAgent`, driven over a fake transport.
+ *
+ * The point is not to test Claude. It is to test everything around Claude: that
+ * the lever tools exist and are reachable, that a lever the merchant has not
+ * permitted returns nothing to price with, and -- the part that matters for the
+ * merchant console -- that uplift is attributed to a lever only when the lever
+ * is visible in the cart the gate actually approved.
+ *
+ * The fake plays the part of the model: it calls the real tools, with real
+ * arguments, and submits a real proposal through the real gate. Only the
+ * judgement about *which* tool to call next is scripted. Before this existed,
+ * `LlmRevenueAgent` had never executed at all.
+ */
+
+type Play = (call: (name: string, input: unknown) => Promise<string>) => Promise<string>;
+
+function fakeClaude(play: Play): NonNullable<LlmOptions["client"]> {
+  return {
+    beta: {
+      messages: {
+        toolRunner(params: { tools: RunnableTool[] }) {
+          const byName = new Map(params.tools.map((t) => [t.name, t]));
+          const call = async (name: string, input: unknown): Promise<string> => {
+            const tool = byName.get(name);
+            if (tool === undefined) {
+              throw new Error(`the model called a tool that does not exist: ${name}`);
+            }
+            const run = (tool as unknown as { run: (i: unknown) => unknown }).run;
+            return String(await run(input));
+          };
+          return {
+            pushMessages: () => undefined,
+            async *[Symbol.asyncIterator]() {
+              const text = await play(call);
+              yield {
+                content: [{ type: "text", text }],
+                stop_reason: "end_turn",
+                usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0 },
+              };
+            },
+          };
+        },
+      },
+    },
+  } as unknown as NonNullable<LlmOptions["client"]>;
+}
+
+const BIG_MANDATE = {
+  vertical: "b2b_procurement" as const,
+  reserved_paise: rupees(300_000),
+  max_per_txn_paise: rupees(150_000),
+  requires_human_approval_above_paise: rupees(200_000),
+};
+
+describe("the Revenue Agent, with the model driving", () => {
+  it("gives the model nothing to price with on a lever the merchant forbids", async () => {
+    // QUICK permits bundle and substitute. It does not permit bulk_tier.
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_forbid" });
+    let answer = "";
+
+    const agent = new LlmRevenueAgent(h.ctx(QUICK, bridge.submit), {
+      client: fakeClaude(async (call) => {
+        answer = await call("bulk_tier_quote", { sku: "QC_RICE_5KG", qty: 10 });
+        return "no tier here";
+      }),
+    });
+    await agent.negotiate({ session_id: "ses_forbid", buyer_message: "two bags of rice" });
+
+    const parsed = JSON.parse(answer) as { available: boolean; unit_paise?: number };
+    expect(parsed.available).toBe(false);
+    // A refusal must not leak a price the merchant never authorised.
+    expect(parsed.unit_paise).toBeUndefined();
+    h.store.close();
+  });
+
+  it("moves a buyer up a rung, and attributes the uplift to the tier", async () => {
+    const h = harness(BULK, BULK_ITEMS, mandateOf(BIG_MANDATE));
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_rung" });
+
+    const agent = new LlmRevenueAgent(h.ctx(BULK, bridge.submit), {
+      client: fakeClaude(async (call) => {
+        await call("search_catalog", { query: "", category: "" });
+        // The buyer asked for four. The next rung on the ladder is five.
+        const tier = JSON.parse(
+          await call("bulk_tier_quote", { sku: "WS_RICE_25KG", qty: 5 }),
+        ) as { unit_paise: number; discount_bps: number };
+        await call("submit_offer", {
+          lines: [{ sku: "WS_RICE_25KG", qty: 5, offer_unit_paise: tier.unit_paise }],
+          quoted_total_paise: tier.unit_paise * 5,
+          rationale: "One more sack reaches the next price break.",
+        });
+        return "Five sacks costs less per sack than four.";
+      }),
+    });
+
+    const result = await agent.negotiate({
+      session_id: "ses_rung",
+      buyer_message: "I need 4 sacks of Sona Masoori rice",
+    });
+
+    expect(result.settled?.feedback.outcome).toBe("ALLOW");
+    expect(result.value?.levers_used).toContain("bulk_tier");
+    // The basket the buyer would have bought was four sacks at ordinary
+    // pricing. The lever earned its discount by selling a fifth.
+    expect(result.value?.final_paise ?? 0).toBeGreaterThan(result.value?.baseline_paise ?? 0);
+    expect(result.value?.uplift_bps ?? 0).toBeGreaterThan(0);
+    h.store.close();
+  });
+
+  it("attributes nothing to a lever the model looked at and did not use", async () => {
+    const h = harness(BULK, BULK_ITEMS, mandateOf(BIG_MANDATE));
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_idle" });
+    const ctx = h.ctx(BULK, bridge.submit);
+    const ordinary = ordinaryUnit(ctx, "WS_RICE_25KG");
+
+    const agent = new LlmRevenueAgent(ctx, {
+      client: fakeClaude(async (call) => {
+        // Reads the ladder, then quotes the ordinary price anyway.
+        await call("bulk_tier_quote", { sku: "WS_RICE_25KG", qty: 5 });
+        await call("submit_offer", {
+          lines: [{ sku: "WS_RICE_25KG", qty: 4, offer_unit_paise: ordinary }],
+          quoted_total_paise: ordinary * 4,
+          rationale: "Four sacks at our standard price.",
+        });
+        return "Four sacks it is.";
+      }),
+    });
+
+    const result = await agent.negotiate({
+      session_id: "ses_idle",
+      buyer_message: "I need 4 sacks of Sona Masoori rice",
+    });
+
+    expect(result.settled?.feedback.outcome).toBe("ALLOW");
+    // Consulting a tool is not pulling a lever. The console must not say it was.
+    expect(result.value?.levers_used).toEqual([]);
+    expect(result.value?.uplift_paise).toBe(0);
+    h.store.close();
+  });
+
+  it("offers an uninvited add-on as a suggestion, never as a cart line", async () => {
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_polite" });
+    const ctx = h.ctx(QUICK, bridge.submit);
+    const rice = ordinaryUnit(ctx, "QC_RICE_5KG");
+    let invited = true;
+
+    const agent = new LlmRevenueAgent(ctx, {
+      client: fakeClaude(async (call) => {
+        const bundle = JSON.parse(
+          await call("suggest_bundle", {
+            lines: [{ sku: "QC_RICE_5KG", qty: 2, unit_paise: rice }],
+          }),
+        ) as { invited: boolean; suggestion: { title: string } };
+        invited = bundle.invited;
+        // Not invited, so the add-on is mentioned and the cart is left alone.
+        await call("submit_offer", {
+          lines: [{ sku: "QC_RICE_5KG", qty: 2, offer_unit_paise: rice }],
+          quoted_total_paise: rice * 2,
+          rationale: "Two bags of rice.",
+        });
+        return `Two bags of rice. We also have ${bundle.suggestion.title} if you want it.`;
+      }),
+    });
+
+    const result = await agent.negotiate({
+      session_id: "ses_polite",
+      buyer_message: "two bags of rice",
+    });
+
+    expect(invited).toBe(false);
+    expect(result.settled?.feedback.outcome).toBe("ALLOW");
+    expect(result.settled?.proposal.lines).toHaveLength(1);
+    // Offered but not taken: a suggestion on the result, and no lever credit.
+    expect(result.suggestion?.sku).toBe("QC_TEA_250G");
+    expect(result.value?.levers_used).not.toContain("bundle");
+    h.store.close();
+  });
+
+  it("credits the bundle only once the invited add-on is in the approved cart", async () => {
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_invited" });
+    const ctx = h.ctx(QUICK, bridge.submit);
+    const rice = ordinaryUnit(ctx, "QC_RICE_5KG");
+
+    const agent = new LlmRevenueAgent(ctx, {
+      client: fakeClaude(async (call) => {
+        const bundle = JSON.parse(
+          await call("suggest_bundle", {
+            lines: [{ sku: "QC_RICE_5KG", qty: 2, unit_paise: rice }],
+          }),
+        ) as { invited: boolean; suggestion: { sku: string; qty: number; unit_paise: number } };
+        expect(bundle.invited).toBe(true);
+        const add = bundle.suggestion;
+        await call("submit_offer", {
+          lines: [
+            { sku: "QC_RICE_5KG", qty: 2, offer_unit_paise: rice },
+            { sku: add.sku, qty: add.qty, offer_unit_paise: add.unit_paise },
+          ],
+          quoted_total_paise: rice * 2 + add.unit_paise * add.qty,
+          rationale: "Rice, plus the tea to save a second trip.",
+        });
+        return "Rice and tea, one delivery.";
+      }),
+    });
+
+    const result = await agent.negotiate({
+      session_id: "ses_invited",
+      buyer_message: "two bags of rice, and stock me up for the week",
+    });
+
+    expect(result.settled?.feedback.outcome).toBe("ALLOW");
+    expect(result.settled?.proposal.lines).toHaveLength(2);
+    expect(result.value?.levers_used).toContain("bundle");
+    expect(result.value?.uplift_paise ?? 0).toBeGreaterThan(0);
+    // In the cart is not a suggestion any more.
+    expect(result.suggestion).toBeUndefined();
+    h.store.close();
+  });
+
+  it("records the prompt and model provenance the ledger needs", async () => {
+    const h = harness();
+    const bridge = gateVia(h.engine, { mandate_id: "mnd_test", session_id: "ses_prov" });
+    const agent = new LlmRevenueAgent(h.ctx(QUICK, bridge.submit), {
+      model: "claude-opus-5",
+      effort: "high",
+      client: fakeClaude(async () => "nothing to quote"),
+    });
+
+    const result = await agent.negotiate({
+      session_id: "ses_prov",
+      buyer_message: "two bags of rice",
+    });
+
+    expect(result.llm?.model).toBe("claude-opus-5");
+    expect(result.llm?.effort).toBe("high");
+    expect(result.llm?.input_hash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(result.llm?.output_hash).toMatch(/^[0-9a-f]{64}$/u);
+    h.store.close();
   });
 });

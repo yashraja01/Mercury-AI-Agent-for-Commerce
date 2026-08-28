@@ -83,6 +83,15 @@ export interface NegotiatorContext {
   submit: (proposal: Proposal) => Promise<GateFeedback>;
   /** Rounds allowed per turn, including the first. */
   maxRounds?: number;
+  /**
+   * Did the buyer's own message invite an add-on?
+   *
+   * The bundle lever is the only one that changes *what* is in the cart, so it
+   * needs consent. Set per turn from the buyer's message and read by
+   * `suggest_bundle`, so the model is told rather than left to judge whether it
+   * was invited -- a judgement with an obvious incentive attached.
+   */
+  invited?: boolean;
 }
 
 export interface Negotiator {

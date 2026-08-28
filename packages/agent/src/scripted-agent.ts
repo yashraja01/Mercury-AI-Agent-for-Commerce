@@ -1,5 +1,5 @@
 import type { Lever, Paise, Proposal, RuleId } from "@mercury/core";
-import { formatINR, mulP, paise, sumP } from "@mercury/core";
+import { formatINR, paise } from "@mercury/core";
 import {
   type BundleSuggestion,
   type Substitution,
@@ -15,7 +15,14 @@ import type {
   NegotiationTurn,
   NegotiatorContext,
 } from "./negotiator.js";
-import { priceFloor, quoteTotal, searchCatalog } from "./tools.js";
+import { priceFloor, quoteTotal } from "./tools.js";
+import {
+  ORDINARY_DISCOUNT_BPS,
+  inferCart,
+  invitesAddOns,
+  ordinaryBasket,
+  ordinaryUnit,
+} from "./basket.js";
 
 /**
  * The Revenue Agent without the model.
@@ -49,114 +56,6 @@ export interface ScriptedOptions {
   want?: readonly { sku: string; qty: number }[];
   /** Re-quote at the lowest legal price after a repairable denial. */
   reQuote?: boolean;
-}
-
-/**
- * Words that appear in a product title but do not identify a product.
- *
- * Packaging and size nouns are the trap: "a pack of tea" matched three
- * different SKUs before this list existed, because "pack" is in the title of
- * the biscuits and the soap. A buyer naming a unit is describing how they want
- * it, not what they want.
- */
-const NOT_A_PRODUCT = new Set([
-  "pack", "packs", "bag", "bags", "bottle", "bottles", "tin", "tins", "sack",
-  "sacks", "carton", "cartons", "box", "boxes", "roll", "rolls", "each", "the",
-  "and", "for", "with", "pure", "whole", "filter", "count", "size", "large",
-  "small", "please", "some", "want", "need", "give", "order",
-]);
-
-const WORD_NUMBERS: Record<string, number> = {
-  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
-  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, dozen: 12, fifteen: 15,
-  twenty: 20, thirty: 30, fifty: 50, hundred: 100,
-};
-
-/** The words in a title that actually name the thing. */
-function keywordsOf(title: string): string[] {
-  return title
-    .toLowerCase()
-    .split(/[^a-z]+/u)
-    .filter((w) => w.length >= 3 && !NOT_A_PRODUCT.has(w));
-}
-
-function wordIndex(text: string, word: string): number {
-  const m = new RegExp(`\\b${word}\\b`, "u").exec(text);
-  return m?.index ?? -1;
-}
-
-/**
- * Infer a cart from free text.
- *
- * This is the seam where a sentence becomes a proposal, and it is deliberately
- * conservative: it will under-read a request rather than invent a line. Whatever
- * it produces is still only a *proposal* -- Dwaar reprices every line and checks
- * every limit -- so a misread here costs a round of negotiation, never money.
- */
-export function inferCart(
-  ctx: NegotiatorContext,
-  message: string,
-): { sku: string; qty: number }[] {
-  const text = message.toLowerCase();
-  const wanted: { sku: string; qty: number }[] = [];
-
-  for (const item of searchCatalog(ctx, {})) {
-    const skuAt = wordIndex(text, item.sku.toLowerCase());
-
-    // Match on the most specific word first, so "rice 25kg" beats a bare "rice"
-    // when both SKUs could plausibly answer.
-    const keywords = keywordsOf(item.title).sort((a, b) => b.length - a.length);
-    let at = skuAt;
-    let matched = item.sku.toLowerCase();
-    if (at < 0) {
-      for (const w of keywords) {
-        const i = wordIndex(text, w);
-        if (i >= 0) {
-          at = i;
-          matched = w;
-          break;
-        }
-      }
-    }
-    if (at < 0) continue;
-
-    const qty = qtyNear(text, at, new Set([matched, ...keywords])) ?? item.moq;
-    wanted.push({ sku: item.sku, qty: Math.max(qty, item.moq) });
-  }
-  return wanted;
-}
-
-/** Filler a quantity may sit behind without belonging to something else. */
-const SKIPPABLE = new Set(["of", "x", "i", "need", "want", "please", "me", "us"]);
-
-/**
- * The quantity attached to a mention.
- *
- * Scans backwards from the product word, stepping over this item's own title
- * words ("10 sacks of Sona Masoori rice" must reach the 10) and over filler,
- * but stopping dead at a word belonging to a *different* product -- so in "two
- * bags of rice and eight packs of tea" the rice does not get the eight.
- */
-function qtyNear(text: string, at: number, own: ReadonlySet<string>): number | undefined {
-  const before = text.slice(Math.max(0, at - 40), at);
-  const tokens = before.split(/[^a-z0-9]+/u).filter((t) => t !== "");
-
-  for (let i = tokens.length - 1; i >= 0; i -= 1) {
-    const t = tokens[i];
-    if (t === undefined) continue;
-
-    if (/^\d+$/u.test(t)) {
-      const n = Number.parseInt(t, 10);
-      return Number.isSafeInteger(n) && n > 0 && n <= 5_000 ? n : undefined;
-    }
-    const spelled = WORD_NUMBERS[t];
-    if (spelled !== undefined) return spelled;
-
-    if (own.has(t) || NOT_A_PRODUCT.has(t) || SKIPPABLE.has(t)) continue;
-    // A word that names something else. Its quantity is not ours.
-    break;
-  }
-  return undefined;
 }
 
 /**
@@ -202,20 +101,6 @@ interface ShapedCart {
   suggestion?: BundleSuggestion;
 }
 
-/**
- * Did the buyer invite an add-on?
- *
- * A bundle is the one lever that changes what is in the cart, so it needs
- * consent. An agent that silently appends a line to every basket is padding,
- * and would deserve to be caught doing it.
- */
-const INVITATIONS =
-  /\b(stock me up|top ?up|what else|anything else|weekly|restock|fill|usual|whatever you)\b/u;
-
-export function invitesAddOns(message: string): boolean {
-  return INVITATIONS.test(message.toLowerCase());
-}
-
 export class ScriptedRevenueAgent implements Negotiator {
   readonly mode = "scripted" as const;
   readonly #ctx: NegotiatorContext;
@@ -224,6 +109,11 @@ export class ScriptedRevenueAgent implements Negotiator {
   constructor(ctx: NegotiatorContext, opts: ScriptedOptions = {}) {
     this.#ctx = ctx;
     this.#opts = opts;
+  }
+
+  /** The discount this agent gives with no lever pulled. The uplift baseline. */
+  #discountBps(): number {
+    return this.#opts.discountBps ?? ORDINARY_DISCOUNT_BPS;
   }
 
   async negotiate(turn: NegotiationTurn): Promise<NegotiationResult> {
@@ -240,7 +130,7 @@ export class ScriptedRevenueAgent implements Negotiator {
 
     // What the buyer literally asked for, priced ordinarily. This is the number
     // every lever is measured against.
-    const baseline = this.#baseline(asked);
+    const baseline = ordinaryBasket(this.#ctx, asked, this.#discountBps());
 
     const shaped = this.#applyLevers(asked, turn.buyer_message);
     let proposal = this.#firstOffer(shaped.want, shaped.units);
@@ -274,20 +164,6 @@ export class ScriptedRevenueAgent implements Negotiator {
       ...(shaped.substitutions.length === 0 ? {} : { substitutions: shaped.substitutions }),
       value: basketValue(baseline, final, shaped.used),
     };
-  }
-
-  /** The requested basket at ordinary pricing, with no lever applied. */
-  #baseline(want: readonly { sku: string; qty: number }[]): Paise {
-    const floors = new Map(priceFloor(this.#ctx, want.map((w) => w.sku)).map((f) => [f.sku, f]));
-    const discountBps = this.#opts.discountBps ?? 500;
-    return sumP(
-      want.flatMap((w) => {
-        const floor = floors.get(w.sku);
-        if (floor === undefined) return [];
-        const discounted = floor.list_paise - Math.floor((floor.list_paise * discountBps) / 10_000);
-        return [mulP(paise(Math.max(discounted, floor.lowest_legal_unit_paise)), w.qty)];
-      }),
-    );
   }
 
   /**
@@ -338,7 +214,7 @@ export class ScriptedRevenueAgent implements Negotiator {
       const lines = want.map((w) => ({
         sku: w.sku,
         qty: w.qty,
-        unit_paise: units.get(w.sku) ?? this.#ordinaryUnit(w.sku),
+        unit_paise: units.get(w.sku) ?? ordinaryUnit(this.#ctx, w.sku, this.#discountBps()),
       }));
       suggestion = bundleAddOn(catalog, profile, lines);
       if (suggestion !== undefined && invitesAddOns(message)) {
@@ -352,21 +228,13 @@ export class ScriptedRevenueAgent implements Negotiator {
     return { want, units, used, substitutions, ...(suggestion === undefined ? {} : { suggestion }) };
   }
 
-  #ordinaryUnit(sku: string): Paise {
-    const [floor] = priceFloor(this.#ctx, [sku]);
-    if (floor === undefined) return paise(0);
-    const discountBps = this.#opts.discountBps ?? 500;
-    const discounted = floor.list_paise - Math.floor((floor.list_paise * discountBps) / 10_000);
-    return paise(Math.max(discounted, floor.lowest_legal_unit_paise));
-  }
-
   /** List price less the configured discount, floored at (or deliberately under) the merchant floor. */
   #firstOffer(
     want: readonly { sku: string; qty: number }[],
     units: ReadonlyMap<string, Paise>,
   ): Proposal {
     const floors = new Map(priceFloor(this.#ctx, want.map((w) => w.sku)).map((f) => [f.sku, f]));
-    const discountBps = this.#opts.discountBps ?? 500;
+    const discountBps = this.#discountBps();
     const underCut = this.#opts.underCutPaise ?? 0;
 
     const lines = want.flatMap((w) => {

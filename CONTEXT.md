@@ -123,7 +123,8 @@ npm run dev         # Mission Control + merchant console on :3000
 | `npm run mcp:smoke` | Drives the MCP server over real stdio JSON-RPC (needs `npm run dev`) |
 | `npm run chaos` | Runs the failure-audit table F1-F7 and prints what it verified (needs `npm run dev`) |
 | `npm run chaos -- --reset` | Same, but re-seeds the demo bench first |
-| `npm test` | 212 tests. No API key, no network, no spend |
+| `npm run conformance` | Checks the Agent Card and every feed against the shape they claim, and that no public document leaks cost, the margin floor or a supplier account (needs `npm run dev`) |
+| `npm test` | 218 tests. No API key, no network, no spend |
 | `npm run verify` | Re-walks the Sakshi chain independently |
 | `npm run build` | Packages, then `scripts/`, then the Next app |
 
@@ -136,11 +137,11 @@ packages/store   mutable working state (SQLite)
 packages/dwaar   the gate: one pure evaluate()
 packages/rail    RazorpayPort -> FixtureRail | LiveRail
 packages/seed    catalogue + mandate fixtures, buyer wallet
-packages/agent   negotiators, levers, tools, prompts, the Engine
+packages/agent   negotiators, levers, lever tools, prompts, the Engine
 apps/web         Mission Control + merchant console + buyer API + Card + feed
 apps/mcp         MCP stdio server (thin client of apps/web)
 prompts/         system.core.md + three personas
-scripts/         seed, demo, verify-chain, mcp-smoke, chaos
+scripts/         seed, demo, verify-chain, mcp-smoke, chaos, conformance
 ```
 
 Paths in the app are anchored to the repo root, not `process.cwd()` — `next dev`
@@ -222,13 +223,33 @@ Every lever clamps to `lowestLegalUnit` itself, so it cannot produce a price the
 gate would have to catch. The gate still checks — that is what makes the clamp
 safe to trust rather than merely polite.
 
+**Both agents reach the same levers.** The scripted agent calls these functions
+directly; the model reaches them as three tools — `bulk_tier_quote`,
+`suggest_bundle`, `find_substitute` — that call the same implementations. Every
+lever tool is present for every merchant with the same schema, so the cached
+tool prefix does not fork per merchant; one the profile does not permit answers
+`available: false` and returns no price. A lever tool that existed only for one
+agent would make Goal 1 a property of which agent happened to be running.
+
 **Uplift is measured, not asserted.** `BasketValue` records what the buyer asked
 for versus what the gate approved, and it goes into the ledger beside the
-decision.
+decision. The baseline is the same figure on both paths — the basket the buyer's
+own message named, priced with no lever pulled (`basket.ts`) — because two
+agents measuring uplift differently would make the console's total meaningless.
+
+**Attribution is earned, not claimed.** The scripted agent knows which levers it
+pulled. The model chooses, so every lever tool records what it offered and the
+record is checked afterwards against the cart the gate *approved*: the tier price
+must be the price on the line, the add-on must be in the cart, the substitute in
+and the original out. A lever the model looked at and ignored earns nothing, and
+a lever pulled into an offer that was denied earns nothing. Under-counting is the
+only safe direction for a number a merchant reads as revenue.
 
 **Bundling requires consent.** An agent that appends a line to every basket is
 padding. `bundle` returns a *suggestion* unless the buyer's message opens the
-door; only then does it enter the cart.
+door; only then does it enter the cart. On the model's path the merchant decides
+this and hands down the answer as `invited`, rather than letting the model rule
+on a question it has an obvious incentive to get wrong.
 
 ## 11. The buyer surface
 

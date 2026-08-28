@@ -31,26 +31,38 @@
 | M6 | MCP server + Agent Card + feed | ☑ done | external Claude buys end-to-end; `npm run mcp:smoke` |
 | M6.5 | Levers, proof-of-holder, compensation | ☑ done | Goal 1 mechanised; buyer API signed; F2/F3 wired |
 | M7 | Chaos Console -- verify F1--F7 | ☑ done | 7/7 rows green; `npm run chaos` and a UI panel |
-| M8 | Hardening | ◐ part | Route (B2B) done; LiveRail verified as far as keys allow. Feed conformance, deploy, video outstanding |
+| M8 | Hardening | ◐ part | Route (B2B) done; LiveRail verified as far as keys allow. Conformance now done (`npm run conformance`, 75/75). Video outstanding |
 | M9 | Merchant console (Phase 2) | ☑ done | `/merchant`: revenue uplift, orders, editable policy, authority. `BASKET_VALUED` + `POLICY_CHANGED` in the chain |
+| M10 | Lever tools for the model | ☑ done | Three lever tools, earned attribution, `BASKET_VALUED` on the buyer API too. 218 tests |
 
-Blocked: —
+**Blocked, on credentials this machine does not have:**
+
+| # | Task | Needs |
+|---|---|---|
+| 2 | Run `LlmRevenueAgent` once against the real API | `ANTHROPIC_API_KEY` in `.env` |
+| 5 | `live:smoke` against `rzp_test_` keys | a Razorpay account (P3/P4) |
+
+Neither is a code gap. Item 2's surrounding machinery is now exercised in CI
+over a fake transport (six tests), so what is untested is the network call and
+the model's judgement, not the plumbing. Item 5's webhook half is already proven.
 
 ## Start here next session
 
 **State:** M0-M7 committed and green, the first slice of M8, and M9 (the
-merchant console) complete. 212 tests, build clean, chain verifies, all seven
-failure-audit rows verify against the running app, and `mcp:smoke` passes.
-Nothing is half-finished.
+merchant console) complete, plus M10 (lever tools for the model). 218 tests,
+build clean, chain verifies, all seven failure-audit rows verify against the
+running app, `mcp:smoke` passes and `conformance` is 75/75. Nothing is
+half-finished. What remains needs credentials or a human, not code.
 
 **Sanity check before writing code:**
 
 ```bash
-npm install && npm run build && npm test    # expect 212 passed
+npm install && npm run build && npm test    # expect 218 passed
 npm run seed && npm run demo                # both verticals, terminal
 npm run dev                                 # then, elsewhere:
 npm run chaos                               # expect 7/7 rows verified
 npm run mcp:smoke
+npm run conformance                         # expect 75/75 checks
 ```
 
 **The merchant console, checked in four commands** (needs `npm run dev`). This
@@ -69,29 +81,28 @@ curl -s -XPOST localhost:3000/api/merchant/profile -H 'content-type: application
 
 Then open <http://localhost:3000/merchant>. Reset restores the seeded policy.
 
-**The next work, in the order I would do it.** M8 is part done: Route landed and
-the webhook route is wired to a real secret; M9 added the merchant console.
+**The next work, in the order I would do it.** Items 1 and 3 are now done. What
+is left is two credential-gated smoke tests and the video.
 
 The brief leads with revenue and treats *explainable, bounded, gated + audit +
 one failure* as the bar. The deliverable is a **5-10 minute video**, not a
-deployment — which is why deploy has been cut rather than deferred.
+deployment.
 
 | # | Task | Why now | Size |
 |---|---|---|---|
-| 1 | Lever tools for `LlmRevenueAgent` | With Claude driving, Goal 1 reverts to a flat discount; the scripted agent has levers and the LLM one does not. The console now *shows* uplift, so an empty lever table on the Claude path is visible | medium |
-| 2 | Run the LLM path once with a real key | `LlmRevenueAgent` has **never executed** | small, needs `ANTHROPIC_API_KEY` |
-| 3 | Feed + Agent Card conformance (`npm run conformance`) | The feed claims UCP/ACP shape and nothing checks it. Must also assert `supplier_account_id` never leaks into a public feed | small |
+| ~~1~~ | ~~Lever tools for `LlmRevenueAgent`~~ | **Done (M10).** Three tools, earned attribution, six tests over a fake transport | — |
+| 2 | Run the LLM path once with a real key | The plumbing is now covered in CI; what is unproven is the network call and the model's judgement | small, needs `ANTHROPIC_API_KEY` |
+| ~~3~~ | ~~Feed + Agent Card conformance~~ | **Done (M10).** `npm run conformance`, 75/75, leak scan included | — |
 | 4 | Demo video | A runbook exists in nobody's head but mine | **needs a human** |
 | 5 | `npm run live:smoke` against real `rzp_test_` keys | LiveRail's HTTP calls have never run. The webhook half is proven; the API half is not | small, **needs a Razorpay account** |
-| ~~x~~ | ~~Deploy: Dockerfile, health, SQLite volume~~ | **Cut.** No judge visits a URL; the deliverable is a video | — |
+| ~~x~~ | ~~Deploy: Dockerfile, health, SQLite volume~~ | Still cut as a *host* deploy. A public URL is now reached with a tunnel instead — see the gotcha below | — |
 | ~~x~~ | ~~Write `BasketValue` into Sakshi + show uplift~~ | **Done in M9.** | — |
 
 **Known gaps, stated plainly:**
 
-- `LlmRevenueAgent` is unproven against the real API (item 2), and it has no
-  lever tools (item 1). The merchant console now *shows* per-lever uplift, so on
-  the Claude path that table will read empty until item 1 lands — a visible gap
-  rather than a quiet one.
+- `LlmRevenueAgent` is unproven against the real API (item 2). It now has lever
+  tools and is exercised end to end over a fake transport, so the gap is the
+  model's judgement and the HTTP call, not the code around them.
 - `inferCart` is keyword matching where buyer intent enters the system. It fails
   safe -- a misread costs a negotiation round, never money -- but it is the
   weakest link in the default path.
@@ -134,6 +145,21 @@ deployment — which is why deploy has been cut rather than deferred.
 - **Do not use Python single-quoted strings to write regexes into source.** `\b`
   becomes a literal backspace byte and the pattern silently stops matching. Use
   raw strings, or the Write/Edit tools.
+- **The same trap, one layer out: a bash heredoc eats a backslash too.** Moving
+  `inferCart` into `basket.ts` through a quoted heredoc turned `` `\\b${w}\\b` ``
+  into `` `\b${w}\b` ``, and inside a *template literal* `\b` is the backspace
+  escape — so the regex compiled fine, matched nothing, and ten tests went red
+  at once. The tell is a whole family of tests failing on empty results rather
+  than wrong ones. `grep -rn 'new RegExp(`' src` audits every instance in the
+  repo in one line; use Write/Edit for anything containing a backslash.
+- **This network blocks outbound port 7844, so `cloudflared` cannot tunnel.**
+  Its own precheck says so plainly (`UDP Connectivity ... FAIL`, then the same
+  for TCP) and `--protocol http2` fails identically — the port is the problem,
+  not the transport. Only 443 gets out. Pinggy runs its tunnel *over* 443 and
+  works with no account:
+  `ssh -p 443 -R0:localhost:3000 a.pinggy.io`. Free links expire after 60
+  minutes. Read the tunnel's own log before believing a 530 is the app's fault:
+  the app answered 200 on localhost the whole time.
 - **A policy edit outlives the demo that made it.** `mercury.db` is durable and
   `npm run demo` does not re-seed, so a margin floor raised for one beat is
   still raised an hour later, and a chaos row failing for that reason looks
@@ -183,6 +209,8 @@ deployment — which is why deploy has been cut rather than deferred.
 | D23 | 2026-08-27 | A **second screen** for the merchant, rather than more panels on Mission Control | Mission Control is a god's-eye instrument: it shows buyer, merchant and gate at once, which is a seat nobody in the story occupies. The brief's headline is *grow the merchant's revenue*, and a merchant does not watch their own agent negotiate in a theatre — they ask what it earned and what it may do. Two screens make that two questions instead of one crowded answer | A scoreboard strip on Mission Control (shows the number, still nobody's seat); a full settings product with CRUD (form-filling does not survive a 10-minute video) |
 | D24 | 2026-08-27 | The merchant console's revenue figures are **summed from Sakshi**, not from a counter | If a merchant's uplift total and the ledger could disagree, the chain would be a copy of the truth rather than the truth. Recomputing per request costs nothing at this scale and means the number on screen is the number an outside party derives independently | A `basket_value` table in the store (fast, and a second source of truth); a running total on the mandate row (same problem, less honest) |
 | D25 | 2026-08-27 | A policy edit is itself a Sakshi event (`POLICY_CHANGED`), and `zPolicyPatch` admits **four fields** | Two separate arguments. The event: a merchant loosening its own margin floor is precisely what an audit trail exists to record — without it, a cart approved at 8% under a 15% floor reads as a gate failure rather than a policy change made a minute earlier. The narrow patch: `category_taxonomy` feeds `SCOPE.CATEGORY_ALLOWLIST`, so accepting a whole `MerchantProfile` from a form would let a settings page widen a scope allowlist | Accepting a full profile and validating it (one forgotten field is an escalation); logging policy changes to stdout (unverifiable, and gone on restart); no logging at all (the demo beat becomes unexplainable) |
+| D26 | 2026-08-28 | Lever attribution on the model's path is checked against the **approved cart**, not against what the model called | The scripted agent knows what it pulled; the model chooses, so "which lever earned this?" has to be answered from evidence. A tool call is an intention. Requiring the tier price to *be* the price on the line, the add-on to *be* in the cart, and the substitute in with the original out means the console under-counts rather than over-counts, and over-counting is a lie about money in the one figure the brief leads with | Crediting every lever tool the model called (rewards curiosity, not revenue); asking the model to declare which levers it used (a self-report with an incentive attached); crediting from the last proposal rather than the approved one (credits offers the gate denied) |
+| D27 | 2026-08-28 | Every lever tool is present for **every** merchant, and answers `available: false` when the profile forbids it | Tool definitions are the head of the cached prompt prefix. Gating presence on `profile.levers` would fork that prefix per merchant and break D9's "one tool set, only the data behind it differs" — the same design rule that keeps a vertical from needing its own branch inside Dwaar. The permission check stays in `levers.ts`, so it is the same check the scripted agent passes through | Building the tool list from `profile.levers` (cache fork, and two code paths for one permission); one omnibus `pull_lever` tool with a discriminated union (worse schemas, worse descriptions, and the model picks wrong more often) |
 
 ## Failure-recovery audit
 
@@ -201,6 +229,74 @@ deployment — which is why deploy has been cut rather than deferred.
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+
+### 2026-08-28 — M10: lever tools for the model, and a conformance check
+
+Closing the two items the M9 handoff put at the top of the list. Both were the
+same kind of gap: a claim the system made that nothing on one path honoured.
+
+**Lever tools (item 1).** The scripted agent had levers and the model did not,
+so with Claude driving, Goal 1 quietly reverted to a flat discount — and M9 had
+just built a console that displays per-lever uplift, which would have shown an
+empty table on the Claude path. Three tools now sit in the shared surface:
+`bulk_tier_quote` (the ladder, plus the *next* rung and the units needed to
+reach it), `suggest_bundle`, `find_substitute`. They call the same functions in
+`levers.ts` the scripted agent calls.
+
+- Every lever tool is present for every merchant with an identical schema, and
+  one the profile forbids answers `available: false` with no price attached.
+  Gating tool *presence* on the profile would have forked the cached tool prefix
+  per merchant and broken D9's "one tool set, only the data differs".
+- D20: **attribution is earned, not claimed.** The scripted agent knows what it
+  pulled; the model chooses, so each tool records what it offered and the record
+  is checked afterwards against the cart Dwaar *approved* — the tier price must
+  be the price on the line, the add-on must be in the cart, the substitute in
+  and the original out. A lever the model read and ignored earns nothing; a
+  lever pulled into a denied offer earns nothing. Under-counting is the only
+  safe direction for a figure a merchant reads as revenue.
+- Consent is not the model's call. `invitesAddOns` runs once per turn and the
+  answer is handed down as `invited`, because "did they invite an add-on?" is a
+  question the model has an obvious incentive to answer wrongly.
+- `inferCart` and ordinary pricing moved to `basket.ts`, so both agents measure
+  uplift against the *same* baseline. Two agents baselining differently would
+  make the console's total a sum of incompatible measurements.
+
+**`LlmRevenueAgent` now executes** — over a fake transport that plays the model:
+it calls the real tools with real arguments and submits a real proposal through
+the real gate, and only the choice of which tool to call next is scripted. Six
+tests, including the two that matter: a lever consulted and not used earns no
+attribution, and an uninvited add-on comes back as a *suggestion* with the cart
+untouched. The class had never run at all before this.
+
+**Conformance (item 3).** `npm run conformance`: 75 checks over the Agent Card
+and every feed the card advertises. Shape — protocol version, authority model,
+single-use token, the endpoints, integer paise with the currency and minor unit
+restated per line, availability that agrees with inventory. And leakage — eight
+fields (`cost_paise`, `min_margin_bps`, `supplier_account_id`,
+`commission_account_id`, secrets, private keys) scanned for as raw substrings
+rather than as parsed fields, so a key added later inside some nested object
+cannot slip past. A feed is world-readable; that half is the half that matters.
+Also asserts an unknown merchant is a 404 rather than an empty catalogue —
+"we sell nothing" and "no such merchant" are different claims.
+
+**One bug found on the way, in code M6 shipped.** `transact.quote` never
+appended `BASKET_VALUED`. Mission Control recorded uplift from the start and the
+buyer-facing API did not, so a purchase made from Claude Desktop over MCP earned
+the merchant real money and contributed nothing to the revenue the console
+reports. The console sums that event out of the ledger, which is the point — so
+an uplift never appended is an uplift no auditor can find. `mcp:smoke` now shows
+`BASKET_VALUED` in its session trace, which is how it was caught.
+
+**Observed, not asserted.** 218 tests (up from 212), `tsc --build` clean,
+production build clean. Against the running app: `conformance` 75/75, `chaos`
+7/7 with the chain intact at 54 entries, `mcp:smoke` green, and the merchant
+summary still reads `uplift_paise 180400, uplift_bps 566, levers [bulk_tier]`
+for `mch_bulk` — unchanged, which is the regression check that mattered.
+
+**Deployed, for a value of deployed.** A quick tunnel over SSH/443, because this
+network blocks port 7844 and `cloudflared` cannot open a tunnel at all here
+(both gotchas recorded above). It is a link to a laptop, not a host: fine for a
+look, wrong for anything that must outlive the session.
 
 ### 2026-08-27 — M9 the merchant console
 

@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Proposal } from "@mercury/core";
-import { sha256Hex } from "@mercury/core";
+import type { Lever, Proposal } from "@mercury/core";
+import { paise, sha256Hex } from "@mercury/core";
 import type {
   GateFeedback,
   Negotiator,
@@ -10,7 +10,19 @@ import type {
   NegotiatorContext,
 } from "./negotiator.js";
 import { promptHash, systemPrompt } from "./prompts.js";
-import { type OfferSink, buyerTools, revenueTools } from "./tools.js";
+import {
+  type LeverSink,
+  type OfferSink,
+  type TierQuote,
+  buyerTools,
+  revenueTools,
+} from "./tools.js";
+import { inferCart, invitesAddOns, ordinaryBasket } from "./basket.js";
+import {
+  type BundleSuggestion,
+  type Substitution,
+  basketValue,
+} from "./levers.js";
 
 /**
  * The Revenue Agent, backed by Claude.
@@ -85,6 +97,85 @@ class Sink implements OfferSink {
   }
 }
 
+/**
+ * What the model pulled, and what it was worth.
+ *
+ * The scripted agent applies levers itself, so it knows what it used. The model
+ * chooses, so attribution has to be *earned*: every lever tool records what it
+ * offered here, and afterwards each record is checked against the cart that
+ * actually settled. A lever the model looked at and ignored is not revenue.
+ *
+ * The check is deliberately conservative -- the bulk-tier unit price must be
+ * the price on the line, not merely near it. Under-counting an uplift is a
+ * survivable error in a merchant console; over-counting one is a lie about
+ * money, and the whole point of Goal 1 being *measured* is that it cannot be.
+ */
+class LeverLog implements LeverSink {
+  readonly #tiers: TierQuote[] = [];
+  readonly #bundles: BundleSuggestion[] = [];
+  readonly #subs: Substitution[] = [];
+
+  tier(q: TierQuote): void {
+    this.#tiers.push(q);
+  }
+
+  bundle(s: BundleSuggestion): void {
+    this.#bundles.push(s);
+  }
+
+  substitute(s: Substitution): void {
+    this.#subs.push(s);
+  }
+
+  /**
+   * Which levers are visible in the settled cart.
+   *
+   * `asked` is the basket the buyer's own message named, which is how a bundle
+   * is told apart from a line the buyer requested directly.
+   */
+  attribute(
+    settled: Proposal | undefined,
+    asked: readonly { sku: string; qty: number }[],
+  ): {
+    used: Lever[];
+    substitutions: Substitution[];
+    suggestion?: BundleSuggestion;
+  } {
+    const lines = settled?.lines ?? [];
+    const inCart = new Map(lines.map((l) => [l.sku, l]));
+    const askedFor = new Set(asked.map((a) => a.sku));
+    const used: Lever[] = [];
+
+    // -- bulk tier: the tier price is the price on the line ------------------
+    const tiered = this.#tiers.some((q) => {
+      if (q.discount_bps <= 0) return false;
+      const line = inCart.get(q.sku);
+      return line !== undefined && line.offer_unit_paise === q.unit_paise;
+    });
+    if (tiered) used.push("bulk_tier");
+
+    // -- bundle: the add-on is in the cart and the buyer did not ask for it --
+    const landed = this.#bundles.find((b) => inCart.has(b.sku) && !askedFor.has(b.sku));
+    if (landed !== undefined) used.push("bundle");
+
+    // -- substitute: the replacement is in, the original is out --------------
+    const substitutions = this.#subs.filter(
+      (s) => inCart.has(s.to_sku) && !inCart.has(s.from_sku),
+    );
+    if (substitutions.length > 0) used.push("substitute");
+
+    // An add-on that was offered and did not enter the cart is a suggestion,
+    // which is the outcome the consent rule is supposed to produce.
+    const offered = this.#bundles.find((b) => !inCart.has(b.sku));
+
+    return {
+      used,
+      substitutions,
+      ...(landed === undefined && offered !== undefined ? { suggestion: offered } : {}),
+    };
+  }
+}
+
 function textOf(content: Anthropic.Beta.BetaContentBlock[]): string {
   return content
     .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
@@ -114,7 +205,28 @@ export class LlmRevenueAgent implements Negotiator {
 
   async negotiate(turn: NegotiationTurn): Promise<NegotiationResult> {
     const sink = new Sink();
-    const tools = revenueTools(this.#ctx, sink);
+    const levers = new LeverLog();
+
+    /*
+     * The buyer's consent, decided once and handed to the tool.
+     *
+     * `invitesAddOns` is the same test the scripted agent applies. Putting the
+     * answer in the context rather than in the prompt means the model is told
+     * whether it was invited instead of ruling on it -- a question it has an
+     * obvious incentive to get wrong.
+     */
+    const ctx: NegotiatorContext = {
+      ...this.#ctx,
+      invited: invitesAddOns(turn.buyer_message),
+    };
+
+    // What the buyer's message named, priced with no lever pulled. The model
+    // does not see this: it is the counterfactual the uplift is measured
+    // against, and an agent that could see its own scorecard would optimise it.
+    const asked = inferCart(ctx, turn.buyer_message);
+    const baseline = ordinaryBasket(ctx, asked);
+
+    const tools = revenueTools(ctx, sink, levers);
     const system = systemPrompt(this.#ctx.persona);
 
     const history: Anthropic.Beta.BetaMessageParam[] = (turn.history ?? []).map((h) => ({
@@ -135,7 +247,12 @@ export class LlmRevenueAgent implements Negotiator {
           `Session ${turn.session_id}. Merchant ${this.#ctx.profile.merchant_id} ` +
           `(${this.#ctx.profile.display_name}), vertical ${this.#ctx.profile.vertical}. ` +
           `You may submit at most ${this.#ctx.maxRounds ?? 3} offers this turn. ` +
-          `End your turn with a short message to the buyer, not with a tool call.`,
+          `End your turn with a short message to the buyer, not with a tool call. ` +
+          `Revenue levers permitted for this merchant: ` +
+          `${ctx.profile.levers.length === 0 ? "none" : ctx.profile.levers.join(", ")}. ` +
+          (ctx.invited === true
+            ? `The buyer's message invites an add-on, so a bundle line may enter the cart.`
+            : `The buyer did not invite an add-on. You may mention one; do not add it to the cart.`),
       },
     ];
 
@@ -172,10 +289,20 @@ export class LlmRevenueAgent implements Negotiator {
     const reply = last === undefined ? "" : textOf(last.content);
     const accepted = sink.accepted;
 
+    // Attribution runs against the cart Dwaar approved, not the cart the model
+    // hoped for. A lever pulled into an offer that was denied earned nothing.
+    const pulled = levers.attribute(accepted?.proposal, asked);
+    const final = paise(
+      accepted?.feedback.computed_total_paise ?? accepted?.proposal.quoted_total_paise ?? 0,
+    );
+
     return {
       reply,
       rounds: sink.list,
       ...(accepted === undefined ? {} : { settled: accepted }),
+      ...(pulled.suggestion === undefined ? {} : { suggestion: pulled.suggestion }),
+      ...(pulled.substitutions.length === 0 ? {} : { substitutions: pulled.substitutions }),
+      value: basketValue(baseline, final, pulled.used),
       llm: {
         model: this.#model,
         effort: this.#effort,

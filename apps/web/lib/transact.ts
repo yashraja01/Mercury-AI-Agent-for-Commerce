@@ -129,6 +129,36 @@ export async function quote(input: {
   });
 
   const accepted = bridge.accepted();
+
+  /*
+   * What the levers were worth, into the chain -- on this path too.
+   *
+   * Mission Control recorded this from the start and the buyer-facing API did
+   * not, which meant a purchase made from Claude Desktop over MCP earned the
+   * merchant real money and contributed nothing to the revenue the console
+   * reports. The console sums `BASKET_VALUED` out of the ledger, so an uplift
+   * that is never appended is an uplift that never happened as far as any
+   * auditor is concerned -- and Goal 1 is the claim that most needs to survive
+   * being checked.
+   *
+   * Same condition as Mission Control: only a basket the gate approved counts.
+   */
+  if (result.value !== undefined && accepted !== undefined && accepted.kind !== "DENIED") {
+    m.sakshi.append({
+      actor: { type: "merchant_agent", id: "agt_revenue" },
+      event_type: "BASKET_VALUED",
+      session_id: sessionId,
+      detail: {
+        merchant_id: profile.merchant_id,
+        baseline_paise: result.value.baseline_paise,
+        final_paise: result.value.final_paise,
+        uplift_paise: result.value.uplift_paise,
+        uplift_bps: result.value.uplift_bps,
+        levers_used: result.value.levers_used,
+      },
+    });
+  }
+
   const base = {
     session_id: sessionId,
     merchant: {

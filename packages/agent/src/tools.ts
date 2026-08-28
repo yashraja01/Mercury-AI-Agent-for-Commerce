@@ -1,8 +1,18 @@
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
 import * as z from "zod/v4";
-import type { CatalogItem, Proposal } from "@mercury/core";
+import type { CatalogItem, Lever, Paise, Proposal } from "@mercury/core";
+import { paise } from "@mercury/core";
 import { lowestLegalUnit } from "@mercury/dwaar";
+import {
+  DEFAULT_TIERS,
+  type BundleSuggestion,
+  type Substitution,
+  bulkTierUnit,
+  bundleAddOn,
+  nextTier,
+  substituteFor,
+} from "./levers.js";
 import type { GateFeedback, NegotiatorContext } from "./negotiator.js";
 
 /**
@@ -197,7 +207,11 @@ export interface OfferSink {
  * so the cached prefix (tools -> system -> messages) stays byte-identical
  * across turns and only the buyer's message varies.
  */
-export function revenueTools(ctx: NegotiatorContext, sink: OfferSink): RunnableTool[] {
+export function revenueTools(
+  ctx: NegotiatorContext,
+  sink: OfferSink,
+  levers: LeverSink = NO_LEVERS,
+): RunnableTool[] {
   const maxRounds = ctx.maxRounds ?? 3;
 
   const search = betaZodTool({
@@ -254,7 +268,9 @@ export function revenueTools(ctx: NegotiatorContext, sink: OfferSink): RunnableT
     },
   });
 
-  return [search, floor, offer].map(harden);
+  // Order is fixed: catalogue, then floor, then the levers, then the gate. The
+  // tool block is the head of the cached prefix, so it must not vary per turn.
+  return [search, floor, ...leverTools(ctx, levers), offer].map(harden);
 }
 
 /** The buyer agent's single tool: say something back. */
@@ -269,4 +285,183 @@ export function buyerTools(capture: (message: string) => void): RunnableTool[] {
     },
   });
   return [reply].map(harden);
+}
+
+/* ------------------------------------------------------------ lever tools -- */
+
+/**
+ * What the model actually pulled.
+ *
+ * The scripted agent applies levers itself and therefore knows what it used.
+ * The model decides for itself, so the only way to attribute uplift honestly is
+ * to record what it asked for and check it against the cart that settled --
+ * which is what `LeverSink` is for. A lever the model merely *looked at* is not
+ * a lever it used, and the merchant console must not be told otherwise.
+ */
+export interface TierQuote {
+  sku: string;
+  qty: number;
+  unit_paise: Paise;
+  discount_bps: number;
+}
+
+export interface LeverSink {
+  /** A bulk-tier price the model was quoted for a SKU at a quantity. */
+  tier(q: TierQuote): void;
+  /** An add-on the model was offered. Whether it entered the cart is checked later. */
+  bundle(s: BundleSuggestion): void;
+  /** A swap the model was offered for a line it could not fill. */
+  substitute(s: Substitution): void;
+}
+
+/** A sink that records nothing, for callers that only want the catalogue tools. */
+export const NO_LEVERS: LeverSink = {
+  tier: () => undefined,
+  bundle: () => undefined,
+  substitute: () => undefined,
+};
+
+export const zTierInput = z.object({
+  sku: z.string().describe("A SKU from search_catalog."),
+  qty: z.int().min(1).describe("The quantity the buyer is considering."),
+});
+
+export const zBundleInput = z.object({
+  lines: z
+    .array(
+      z.object({
+        sku: z.string(),
+        qty: z.int().min(1),
+        unit_paise: z.int().min(0).describe("The unit price you intend to offer, integer paise."),
+      }),
+    )
+    .min(1)
+    .describe("The cart as it stands. The add-on is chosen to complement it."),
+});
+
+export const zSubstituteInput = z.object({
+  sku: z.string().describe("The SKU the buyer asked for."),
+  qty: z.int().min(1).describe("How many they want."),
+});
+
+/**
+ * The three revenue levers, as tools.
+ *
+ * These are the same functions the scripted agent calls (`levers.ts`), exposed
+ * so the model can reach them. Without this the LLM path has no mechanism for
+ * Goal 1 at all and falls back to a flat discount, which is not a revenue agent
+ * -- it is a coupon.
+ *
+ * Every one of them is present for every merchant, with the same schema, so the
+ * cached tool prefix does not fork per merchant (D9: one tool set, only the data
+ * behind it differs). A lever the profile does not permit answers `available:
+ * false` and returns nothing to price with. The permission check lives in
+ * `levers.ts`, so it is the same check the scripted agent passes through.
+ */
+function leverTools(ctx: NegotiatorContext, levers: LeverSink): RunnableTool[] {
+  const permits = (l: Lever): boolean => ctx.profile.levers.includes(l);
+  const denied = (l: Lever): string =>
+    JSON.stringify({ available: false, reason: `this merchant does not permit the ${l} lever` });
+
+  const tier = betaZodTool({
+    name: "bulk_tier_quote",
+    description:
+      "The quantity-ladder price for a SKU: the discount this quantity earns, the unit price it " +
+      "implies, and the next rung up with the quantity needed to reach it. The price returned is " +
+      "already clamped to the merchant floor, so it is always safe to offer. Use this to move a " +
+      "buyer up a rung rather than discounting a quantity they already chose.",
+    inputSchema: zTierInput,
+    run: (args) => {
+      if (!permits("bulk_tier")) return denied("bulk_tier");
+      const item = ctx.catalog.get(args.sku);
+      if (item === undefined) {
+        return JSON.stringify({ available: false, reason: `unknown sku: ${args.sku}` });
+      }
+      const { unit, tier: earned, clamped } = bulkTierUnit(item, args.qty, ctx.profile);
+      levers.tier({ sku: item.sku, qty: args.qty, unit_paise: unit, discount_bps: earned.discount_bps });
+      const next = nextTier(args.qty);
+      const upgrade =
+        next === undefined ? undefined : bulkTierUnit(item, next.min_qty, ctx.profile);
+      return JSON.stringify({
+        available: true,
+        sku: item.sku,
+        qty: args.qty,
+        list_paise: item.list_paise,
+        unit_paise: unit,
+        discount_bps: earned.discount_bps,
+        // True when the ladder wanted to go deeper than the merchant floor allows.
+        // The deeper rung is then worth nothing, and offering it is a lie.
+        clamped_to_floor: clamped,
+        ladder: DEFAULT_TIERS,
+        ...(next === undefined || upgrade === undefined
+          ? {}
+          : {
+              next_tier: {
+                min_qty: next.min_qty,
+                discount_bps: next.discount_bps,
+                unit_paise: upgrade.unit,
+                units_to_go: next.min_qty - args.qty,
+              },
+            }),
+      });
+    },
+  });
+
+  const bundle = betaZodTool({
+    name: "suggest_bundle",
+    description:
+      "One add-on worth offering alongside this cart: a different category from the cart's " +
+      "anchor, in stock, capped at a share of the basket. Returns whether the buyer's own " +
+      "message invited an add-on. If it did not, you may MENTION the item but must NOT put it " +
+      "in submit_offer -- a line the buyer never asked for is padding, not revenue.",
+    inputSchema: zBundleInput,
+    run: (args) => {
+      if (!permits("bundle")) return denied("bundle");
+      const lines = args.lines.map((l) => ({
+        sku: l.sku,
+        qty: l.qty,
+        unit_paise: paise(l.unit_paise),
+      }));
+      const found = bundleAddOn(ctx.catalog, ctx.profile, lines);
+      if (found === undefined) {
+        return JSON.stringify({ available: true, suggestion: null, reason: "nothing fits this cart" });
+      }
+      levers.bundle(found);
+      return JSON.stringify({
+        available: true,
+        invited: ctx.invited === true,
+        suggestion: found,
+      });
+    },
+  });
+
+  const substitute = betaZodTool({
+    name: "find_substitute",
+    description:
+      "The nearest stocked equivalent when a line cannot be filled: same category, enough stock, " +
+      "closest list price. Returns nothing if the SKU can be filled as asked, or if no equivalent " +
+      "exists. Never offer an item from another category as a substitute.",
+    inputSchema: zSubstituteInput,
+    run: (args) => {
+      if (!permits("substitute")) return denied("substitute");
+      const found = substituteFor(ctx.catalog, ctx.profile, args.sku, args.qty);
+      if (found === undefined) {
+        const item = ctx.catalog.get(args.sku);
+        return JSON.stringify({
+          available: true,
+          substitution: null,
+          reason:
+            item === undefined
+              ? `unknown sku: ${args.sku}`
+              : item.stock >= args.qty
+                ? "this line can be filled as asked"
+                : "no stocked equivalent in the same category",
+        });
+      }
+      levers.substitute(found);
+      return JSON.stringify({ available: true, substitution: found });
+    },
+  });
+
+  return [tier, bundle, substitute];
 }
