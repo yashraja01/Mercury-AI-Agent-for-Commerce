@@ -35,6 +35,7 @@
 | M9 | Merchant console (Phase 2) | ☑ done | `/merchant`: revenue uplift, orders, editable policy, authority. `BASKET_VALUED` + `POLICY_CHANGED` in the chain |
 | M10 | Lever tools for the model | ☑ done | Three lever tools, earned attribution, `BASKET_VALUED` on the buyer API too. 218 tests |
 | M11 | Merchant control surface | ☑ done | Five new Dwaar rules, editable as plain-English instructions. Direction C UI. 232 tests |
+| M12 | Orbiter, plainer controls, Mission Control | ☑ done | Real font on display + body; sliders/boxes; observer screen in the same language |
 
 **Blocked, on credentials this machine does not have:**
 
@@ -51,7 +52,8 @@ the model's judgement, not the plumbing. Item 5's webhook half is already proven
 
 **State:** M0-M7 committed and green, the first slice of M8, M9 (the
 merchant console), M10 (lever tools for the model) and M11 (the merchant control
-surface plus the UI overhaul) complete. 232 tests,
+surface plus the UI overhaul), and M12 (Orbiter, plainer controls, Mission
+Control) complete. 232 tests,
 build clean, chain verifies, all seven failure-audit rows verify against the
 running app, `mcp:smoke` passes and `conformance` is 75/75. Nothing is
 half-finished. What remains needs credentials or a human, not code.
@@ -67,8 +69,8 @@ npm run mcp:smoke
 npm run conformance                         # expect 75/75 checks
 ```
 
-**The merchant console, checked in four commands** (needs `npm run dev`). This
-is also the demo beat: the same cart, priced by two different policies.
+**The merchant console, checked in four commands** (needs `npm run dev`). The
+second half is the demo beat: a control the merchant sets, refusing a sale.
 
 ```bash
 curl -s -XPOST localhost:3000/api/negotiate -H 'content-type: application/json' \
@@ -77,9 +79,15 @@ curl -s 'localhost:3000/api/merchant/summary?merchant_id=mch_bulk'
 # expect uplift_paise 180400, uplift_bps 566, levers [bulk_tier]
 
 curl -s -XPOST localhost:3000/api/merchant/profile -H 'content-type: application/json' \
-  -d '{"merchant_id":"mch_quick","min_margin_bps":5500}'
-# then re-run `topup`: the same cart costs 147750 instead of 137750
+  -d '{"merchant_id":"mch_quick","max_order_lines":1}'
+# then re-run `topup`: denied on ORDER.LINE_CAP, before the catalogue is touched
 ```
+
+Note the old beat (raise `min_margin_bps` to 5500, watch the same cart reprice)
+still works over the API but **is no longer reachable from the UI** — M12 removed
+the margin-floor control at the user's request. `MARGIN.FLOOR_BREACH` is still
+enforced; only the console field is gone. The order-shape limits make a sharper
+beat anyway, because they refuse rather than reprice.
 
 Then open <http://localhost:3000/merchant>. Reset restores the seeded policy.
 
@@ -110,18 +118,15 @@ deployment.
   weakest link in the default path.
 - `npm audit` reports 3 high advisories from Next 15's own postcss/sharp.
   Clearing them means Next 16, a framework major, and that is the user's call.
-- **The display face is a stand-in.** `--font-display` resolves to Space Grotesk
-  because TASA Orbiter Display SemiBold is on neither Google Fonts nor Fontshare
-  and `next/font/google` cannot fetch it. Drop the files in
-  `apps/web/app/fonts/`, swap the `next/font` declaration in `app/layout.tsx` for
-  `next/font/local`, and keep the variable name `--font-display-face` — the
-  stylesheet knows no other. Sizes and tracking are already set for a display
-  grotesque. No component names a font family directly, which is what keeps the
-  swap to two lines.
-- Mission Control has **not** been reworked yet. M11 rebuilt `/merchant`; the
-  observer screen still uses the older instrument grid, which is defensible
-  (density genuinely helps there) but the two now share a vocabulary rather than
-  a layout, and that was deliberate rather than accidental.
+- **The Orbiter files are committed to the repo** (`apps/web/app/fonts/`, five
+  `.otf` cuts, ~155 KB) and came from a font-aggregator download. If this is ever
+  deployed publicly rather than shown in a video, check the licence covers
+  redistribution — embedding a webfont serves it to every visitor.
+- Mission Control keeps its two-column instrument grid. That is deliberate — the
+  observer watches several things at once and density genuinely helps — so the
+  two screens share a *vocabulary* rather than a layout. What M12 gave it was the
+  merchant console's plain-language framing and the same proof-on-demand toggle,
+  not the merchant's single-column shape.
 - `credit_terms` is declared as a lever and implemented by nothing. It is
   discussed in the B2B persona as a closing lever the agent may not price, which
   is defensible, but it is not mechanised like the other three.
@@ -246,6 +251,68 @@ deployment.
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+### 2026-08-29 — M12: TASA Orbiter, plainer controls, and Mission Control
+
+**The real font landed.** `apps/web/app/fonts/` now carries five TASA Orbiter
+cuts and `next/font/local` serves them. The family turned out to include a
+**Text** cut, so Orbiter carries body copy as well as headlines — Display for
+headlines and big figures, Text for everything a sentence is set in. Plex Mono
+still sets every money column, because tabular figures beat voice in a table,
+and Plex Devanagari still sets द्वार and साक्षी. Dropped the `cv05`/`ss03`
+feature settings: those were Plex's stylistic sets and mean nothing to Orbiter.
+
+**The merchant controls stopped being fill-in-the-blank.** The sentence-with-a-
+number idea read well and typed badly — a number inside running text is a
+strange thing to click. Replaced with one control shape per kind of question:
+
+| Shape | For | Because |
+|---|---|---|
+| slider | a percentage | the whole range is meaningful and the useful gesture is "a bit more" |
+| number box | a count or an amount | you already know the number, and dragging to ₹1,50,000 is absurd |
+| toggle | a permission | it is on or off |
+
+That mapping is the legibility argument: a viewer should be able to tell what a
+control does from its *shape*, before reading its label.
+
+**The margin floor left the console.** Removed at the user's request. The rule
+did not go anywhere — `MARGIN.FLOOR_BREACH` still runs on every evaluation and
+`min_margin_bps` is still on the profile and still settable through the API; it
+is simply no longer editable from a settings page, which puts it in the same
+category as `category_taxonomy`. Verified that a save omitting it leaves it at
+800: `applyPolicyPatch` copies every field the patch does not name, which is the
+property that made this a one-line change instead of a refactor.
+
+Worth knowing before the video: the DEVLOG's old demo beat ("raise the floor to
+5500, the same cart costs ₹1,477.50") is no longer reachable from the UI. The
+discount ceiling does the same job — drop it and the agent loses room to
+discount — and the order-shape limits give a sharper one, since they *refuse*
+rather than reprice.
+
+**Mission Control, in the merchant console's language.** The observer screen
+kept its density, which genuinely helps there, and gained the things that made
+the merchant side legible:
+
+- A one-line statement of what the screen is, above the panels. Someone seeing
+  a demo has to place three unfamiliar things at once — two agents and a gate —
+  and naming the job of the screen costs one line and saves the presenter a
+  paragraph.
+- **The gate panel leads with a sentence.** "The gate refused this cart." /
+  "The agent's total did not match. Nothing was charged." Then the two figures,
+  then the failing rule's own deterministic message. The rule table moved behind
+  the same *why you can trust this* toggle the merchant console uses — it is
+  still one click away and still complete, but a first-time viewer is not
+  reading `MANDATE.PER_TXN_CAP` before they know what happened.
+- **The witness panel says what it claims** before showing a hash: change any
+  line and every line after it stops matching. Verify is now the primary button
+  on the panel rather than a quiet outline, because pressing it is the point.
+- Plain tab and heading names: *One purchase* / *What happens when it goes
+  wrong*, *Watch a purchase happen*, *Break it on purpose*, *The gate*, *The
+  witness*.
+
+**Observed, not asserted.** 232 tests, build clean, chaos 7/7 with the chain
+intact, conformance 75/75, `mcp:smoke` green, and all five Orbiter faces confirmed
+emitted and referenced from the served CSS.
+
 ### 2026-08-29 — M11: the merchant's control surface, and the UI overhaul
 
 The merchant console was asked to become "as simple to understand as possible"

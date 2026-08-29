@@ -131,8 +131,27 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
     <div className="flex min-h-screen flex-col">
       <Header state={state} busy={busy} onFreeze={freeze} onReset={reset} current="mission" />
 
+      {/*
+        * One line saying what this screen is, before any panel.
+        *
+        * Someone seeing a demo has to place three unfamiliar things at once --
+        * two agents and a gate. Naming the job of the screen costs one line and
+        * saves the presenter a paragraph.
+        */}
+      <div className="mx-auto w-full max-w-[1680px] px-4 pt-5 lg:px-6">
+        <p className="display text-[19px] leading-snug text-paper">
+          Two AI agents negotiate a purchase.{" "}
+          <span className="text-brass">A gate decides whether any money may move.</span>
+        </p>
+        <p className="mt-1.5 max-w-[92ch] text-[13px] leading-relaxed text-paper-faint">
+          Run a situation on the left and watch it happen. The gate is on the
+          right, with the price it computed for itself; underneath it, the log
+          that makes the whole thing checkable afterwards.
+        </p>
+      </div>
+
       <main className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:p-6">
-        <div className="flex min-h-[560px] flex-col gap-2 lg:h-[calc(100vh-9.5rem)]">
+        <div className="flex min-h-[560px] flex-col gap-2 lg:h-[calc(100vh-13.5rem)]">
           {/* Two ways to watch the same gate: one run narrated, or the whole
               failure table exercised at once. */}
           <TabStrip
@@ -141,8 +160,8 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
             onChange={setView}
             disabled={running}
             tabs={[
-              { id: "theatre", label: "Theatre" },
-              { id: "chaos", label: "Chaos console" },
+              { id: "theatre", label: "One purchase" },
+              { id: "chaos", label: "What happens when it goes wrong" },
             ]}
           />
 
@@ -168,7 +187,7 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
           )}
         </div>
 
-        <div className="grid min-h-0 grid-rows-[minmax(300px,auto)_minmax(300px,auto)] gap-4 lg:h-[calc(100vh-9.5rem)] lg:grid-rows-[1.15fr_1fr]">
+        <div className="grid min-h-0 grid-rows-[minmax(300px,auto)_minmax(300px,auto)] gap-4 lg:h-[calc(100vh-13.5rem)] lg:grid-rows-[1.15fr_1fr]">
           <DwaarPanel verdict={lastVerdict} />
           <SakshiPanel
             entries={ledger}
@@ -182,7 +201,7 @@ export function MissionControl({ llmAvailable }: { llmAvailable: boolean }) {
       </main>
 
       <footer className="border-t border-rule px-6 py-3 text-center text-[11px] text-paper-faint">
-        The agent proposes. Dwaar disposes. Razorpay settles. Sakshi proves it.
+        The agent proposes · the gate decides · Razorpay settles · the log proves it
       </footer>
     </div>
   );

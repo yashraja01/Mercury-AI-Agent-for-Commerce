@@ -1,10 +1,6 @@
 import type { Metadata } from "next";
-import {
-  IBM_Plex_Mono,
-  IBM_Plex_Sans,
-  IBM_Plex_Sans_Devanagari,
-  Space_Grotesk,
-} from "next/font/google";
+import { IBM_Plex_Mono, IBM_Plex_Sans, IBM_Plex_Sans_Devanagari } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
 /*
@@ -39,20 +35,32 @@ const devanagari = IBM_Plex_Sans_Devanagari({
 });
 
 /*
- * The display face.
+ * TASA Orbiter, in two cuts.
  *
- * Space Grotesk stands in for TASA Orbiter Display SemiBold, which is not on
- * Google Fonts and so cannot be fetched here. To swap: drop the files into
- * `app/fonts/`, replace this with `next/font/local`, and keep the variable name
- * -- `--font-display-face` is the only name the stylesheet knows.
+ * Display carries headlines and the big figures; Text carries body copy and
+ * labels. That is what the cuts are drawn for -- Display is tighter and more
+ * mannered at size, Text keeps its counters open at 13px -- and using one for
+ * both would waste half the family.
  *
- * Sizes and tracking throughout are set for a display grotesque, so the
- * substitution is a change of voice, not of layout.
+ * Plex Mono still sets every money column: tabular figures are worth more than
+ * voice in a table, and Plex Devanagari still sets द्वार and साक्षी.
  */
-const display = Space_Grotesk({
-  subsets: ["latin"],
-  weight: ["500", "600", "700"],
+const display = localFont({
+  src: [
+    { path: "./fonts/TASAOrbiterDisplay-Medium.otf", weight: "500", style: "normal" },
+    { path: "./fonts/TASAOrbiterDisplay-SemiBold.otf", weight: "600", style: "normal" },
+  ],
   variable: "--font-display-face",
+  display: "swap",
+});
+
+const orbiterText = localFont({
+  src: [
+    { path: "./fonts/TASAOrbiterText-Regular.otf", weight: "400", style: "normal" },
+    { path: "./fonts/TASAOrbiterText-Medium.otf", weight: "500", style: "normal" },
+    { path: "./fonts/TASAOrbiterText-SemiBold.otf", weight: "600", style: "normal" },
+  ],
+  variable: "--font-body-face",
   display: "swap",
 });
 
@@ -66,7 +74,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${mono.variable} ${sans.variable} ${devanagari.variable} ${display.variable}`}
+      className={`${mono.variable} ${sans.variable} ${devanagari.variable} ${display.variable} ${orbiterText.variable}`}
     >
       <body className="min-h-screen antialiased">{children}</body>
     </html>

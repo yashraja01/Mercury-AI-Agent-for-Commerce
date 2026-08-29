@@ -58,16 +58,28 @@ export function SakshiPanel({
   return (
     <section className="panel flex min-h-0 flex-col">
       <div className="panel-head flex items-baseline justify-between px-4 py-3">
-        <h2 className="font-mono text-[13px] font-semibold uppercase tracking-[0.18em] text-paper">
-          Sakshi
-          <span className="deva ml-2 text-[15px] font-normal text-paper-dim">साक्षी</span>
+        <h2 className="display text-[15px] text-paper">
+          The witness
+          <span className="deva ml-2.5 text-[14px] font-normal text-paper-dim">साक्षी</span>
         </h2>
         <span className="eyebrow">{count} entries · newest first</span>
       </div>
 
+      {/*
+        * What this panel claims, in one sentence, before any hash appears.
+        * "Hash-chained append-only ledger" means nothing to someone watching a
+        * demo; "change one line and every line after it stops matching" does.
+        */}
+      <p className="border-b border-rule px-4 py-3 text-[12.5px] leading-relaxed text-paper-dim">
+        Every decision above is written here and sealed to the one before it.
+        Change any line and all the lines after it stop matching — press{" "}
+        <span className="text-paper">Verify</span> and it is re-checked from the
+        beginning, here, now.
+      </p>
+
       <div className="flex items-center justify-between gap-3 border-b border-rule px-4 py-3">
         <div className="min-w-0">
-          <span className="eyebrow">Tip</span>
+          <span className="eyebrow">Latest seal</span>
           <p className="hash mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
             {tip === "" ? "—" : tip}
           </p>
@@ -76,9 +88,9 @@ export function SakshiPanel({
           type="button"
           onClick={onVerify}
           disabled={verifying}
-          className="shrink-0 border border-rule-bright px-3 py-2 font-mono text-[11px] uppercase tracking-[0.14em] text-paper-dim transition-colors hover:border-paper-faint hover:text-paper disabled:opacity-40"
+          className="shrink-0 border border-brass bg-brass/15 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.14em] text-brass transition-colors hover:bg-brass/25 disabled:opacity-40"
         >
-          {verifying ? "Walking…" : "Verify chain"}
+          {verifying ? "Checking…" : "Verify"}
         </button>
       </div>
 
@@ -91,8 +103,8 @@ export function SakshiPanel({
           }`}
         >
           {verify.ok
-            ? `Chain intact — ${verify.count} entries re-hashed in ${verify.took_ms}ms`
-            : `Chain broken at seq ${String(verify.broken_at)} (${String(verify.reason)})`}
+            ? `Intact — all ${verify.count} entries re-checked in ${verify.took_ms}ms. Nothing has been altered.`
+            : `Broken at entry ${String(verify.broken_at)} — ${String(verify.reason)}`}
         </div>
       )}
 

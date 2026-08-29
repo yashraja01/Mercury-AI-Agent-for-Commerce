@@ -34,19 +34,12 @@
   --color-verdigris-dim: #2b4f46;
 
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  /* TASA Orbiter Text sets body copy; Plex Sans is the fallback, not the plan. */
+  --font-sans: var(--font-body-face), var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
   --font-deva: var(--font-plex-deva), var(--font-plex-sans), sans-serif;
 
-  /*
-   * The display face, reached only through this token.
-   *
-   * Currently Space Grotesk, standing in for TASA Orbiter Display SemiBold --
-   * Orbiter is not servable from Google Fonts, so it needs the real files. When
-   * they land in `app/fonts/`, this line and the `next/font` declaration in
-   * layout.tsx are the only two places that change. No component names a family
-   * directly, which is what keeps that true.
-   */
-  --font-display: var(--font-display-face), var(--font-plex-sans), sans-serif;
+  /* TASA Orbiter Display, from `app/fonts/`. Reached only through this token. */
+  --font-display: var(--font-display-face), var(--font-body-face), sans-serif;
 }
 
 :root {
@@ -61,7 +54,7 @@ body {
 
 body {
   font-family: var(--font-sans);
-  font-feature-settings: "cv05", "ss03";
+  /* No stylistic-set overrides: "cv05"/"ss03" were Plex's, and Orbiter has its own. */
   -webkit-font-smoothing: antialiased;
 }
 

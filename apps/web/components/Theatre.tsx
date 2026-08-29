@@ -243,15 +243,14 @@ export function Theatre({
   return (
     <section className="panel flex min-h-0 flex-1 flex-col">
       <div className="panel-head flex items-baseline justify-between px-4 py-3">
-        <h2 className="font-mono text-[13px] font-semibold uppercase tracking-[0.18em] text-paper">
-          Negotiation theatre
-        </h2>
-        <span className="eyebrow">{running ? "running" : "idle"}</span>
+        <h2 className="display text-[15px] text-paper">Watch a purchase happen</h2>
+        <span className="eyebrow">{running ? "running" : "pick one and press run"}</span>
       </div>
 
       {/* Scenario bench. Each chip is a situation the gate has to survive. */}
       <div className="border-b border-rule px-4 py-3">
-        <div className="flex flex-wrap gap-1.5">
+        <span className="eyebrow">Situations</span>
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {scenarios.map((s) => (
             <button
               key={s.id}
@@ -283,32 +282,35 @@ export function Theatre({
             type="button"
             onClick={onRun}
             disabled={running}
-            className="border border-brass bg-brass/15 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.16em] text-brass transition-colors hover:bg-brass/25 disabled:opacity-40"
+            className="border border-brass bg-brass/15 px-5 py-2.5 font-mono text-[11px] uppercase tracking-[0.16em] text-brass transition-colors hover:bg-brass/25 disabled:opacity-40"
           >
-            {running ? "Negotiating…" : "Run scenario"}
+            {running ? "Negotiating…" : "Run it"}
           </button>
 
-          <TabStrip
-            size="sm"
-            value={mode}
-            onChange={onMode}
-            disabled={running}
-            tabs={[
-              {
-                id: "scripted",
-                label: "Scripted",
-                title: "Deterministic agent. No API key, no network.",
-              },
-              {
-                id: "llm",
-                label: "Claude",
-                disabled: !llmAvailable,
-                title: llmAvailable
-                  ? "Claude negotiates through the same tools and the same gate."
-                  : "Set ANTHROPIC_API_KEY to let Claude make the offers",
-              },
-            ]}
-          />
+          <span className="flex items-center gap-2">
+            <span className="eyebrow">Seller is</span>
+            <TabStrip
+              size="sm"
+              value={mode}
+              onChange={onMode}
+              disabled={running}
+              tabs={[
+                {
+                  id: "scripted",
+                  label: "Scripted",
+                  title: "A deterministic stand-in. No API key, no network, no spend.",
+                },
+                {
+                  id: "llm",
+                  label: "Claude",
+                  disabled: !llmAvailable,
+                  title: llmAvailable
+                    ? "Claude negotiates through the same tools and the same gate."
+                    : "Set ANTHROPIC_API_KEY to let Claude make the offers",
+                },
+              ]}
+            />
+          </span>
         </div>
       </div>
 

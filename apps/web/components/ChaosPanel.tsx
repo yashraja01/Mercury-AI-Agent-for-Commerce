@@ -249,9 +249,7 @@ export function ChaosPanel({ onSettled }: { onSettled: () => void | Promise<void
   return (
     <section className="panel flex min-h-0 flex-1 flex-col">
       <div className="panel-head flex items-baseline justify-between px-4 py-3">
-        <h2 className="font-mono text-[13px] font-semibold uppercase tracking-[0.18em] text-paper">
-          Chaos console
-        </h2>
+        <h2 className="display text-[15px] text-paper">Break it on purpose</h2>
         <span className="eyebrow">
           {done.length === 0
             ? "nothing broken yet"

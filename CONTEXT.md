@@ -396,17 +396,24 @@ and then gives orders, and the layouts should not be interchangeable.
 | Section | Shows | Why it exists |
 |---|---|---|
 | Earnings | **The headline**: what the agent earned over a plain price list, then buyer-asked vs gate-approved and the lever that did it | Goal 1, as the screen's answer rather than one cell among four |
-| Standing instructions | Twelve **editable** controls in three groups — what it may charge, what it may sell, how it may negotiate | Goal 3 made touchable, and the merchant's control surface |
+| What the agent may do | **Editable** controls in three groups — pricing, inventory, negotiation | Goal 3 made touchable, and the merchant's control surface |
 | What it sold | Recent orders, one status foregrounded; the order/payment split behind a toggle | The two advance independently (F5), but that is not a first read |
 | Why a sale can be refused | Per-mandate remaining spend and remaining orders | Both limits bind; either can run out first |
 
-**Every control is a sentence with one number set into it** — "Never sell below
-15% margin", "Always keep 5 units of anything in stock". A merchant thinks in
-percent and rupees and units, never in basis points, and a board that reads as
-standing orders holds twelve controls more easily than a form of four sliders
-held four. The rule id and the raw figure the gate reads sit one toggle away
-under *why you can trust this*: demoted, never deleted, because the determinism
-is the reason to trust any of it.
+**One control shape per kind of question**, so a viewer can tell what a control
+does before reading its label: a **slider** for a percentage, where the range is
+meaningful and the gesture is "a bit more"; a **number box** for a count or an
+amount, where you already know the figure and dragging to ₹1,50,000 is absurd;
+a **toggle** for a permission, which is on or off. Every figure is in the unit a
+shopkeeper thinks in — percent, rupees, units — never basis points. The rule id
+and the raw figure the gate reads sit one toggle away under *why you can trust
+this*: demoted, never deleted, because the determinism is the reason to trust
+any of it.
+
+**The margin floor is not editable here.** `MARGIN.FLOOR_BREACH` still runs on
+every evaluation and `min_margin_bps` still lives on the profile — it is simply
+not on the settings page, alongside identity and the taxonomy. It is the one
+number where a slip sells below cost.
 
 **No control here is advisory.** Each one is a Dwaar rule, and the gate refuses
 a cart that breaks it — set the line cap to 1 and the very next negotiation is
