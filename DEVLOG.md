@@ -34,6 +34,7 @@
 | M8 | Hardening | ◐ part | Route (B2B) done; LiveRail verified as far as keys allow. Conformance now done (`npm run conformance`, 75/75). Video outstanding |
 | M9 | Merchant console (Phase 2) | ☑ done | `/merchant`: revenue uplift, orders, editable policy, authority. `BASKET_VALUED` + `POLICY_CHANGED` in the chain |
 | M10 | Lever tools for the model | ☑ done | Three lever tools, earned attribution, `BASKET_VALUED` on the buyer API too. 218 tests |
+| M11 | Merchant control surface | ☑ done | Five new Dwaar rules, editable as plain-English instructions. Direction C UI. 232 tests |
 
 **Blocked, on credentials this machine does not have:**
 
@@ -48,8 +49,9 @@ the model's judgement, not the plumbing. Item 5's webhook half is already proven
 
 ## Start here next session
 
-**State:** M0-M7 committed and green, the first slice of M8, and M9 (the
-merchant console) complete, plus M10 (lever tools for the model). 218 tests,
+**State:** M0-M7 committed and green, the first slice of M8, M9 (the
+merchant console), M10 (lever tools for the model) and M11 (the merchant control
+surface plus the UI overhaul) complete. 232 tests,
 build clean, chain verifies, all seven failure-audit rows verify against the
 running app, `mcp:smoke` passes and `conformance` is 75/75. Nothing is
 half-finished. What remains needs credentials or a human, not code.
@@ -57,7 +59,7 @@ half-finished. What remains needs credentials or a human, not code.
 **Sanity check before writing code:**
 
 ```bash
-npm install && npm run build && npm test    # expect 218 passed
+npm install && npm run build && npm test    # expect 232 passed
 npm run seed && npm run demo                # both verticals, terminal
 npm run dev                                 # then, elsewhere:
 npm run chaos                               # expect 7/7 rows verified
@@ -108,6 +110,18 @@ deployment.
   weakest link in the default path.
 - `npm audit` reports 3 high advisories from Next 15's own postcss/sharp.
   Clearing them means Next 16, a framework major, and that is the user's call.
+- **The display face is a stand-in.** `--font-display` resolves to Space Grotesk
+  because TASA Orbiter Display SemiBold is on neither Google Fonts nor Fontshare
+  and `next/font/google` cannot fetch it. Drop the files in
+  `apps/web/app/fonts/`, swap the `next/font` declaration in `app/layout.tsx` for
+  `next/font/local`, and keep the variable name `--font-display-face` — the
+  stylesheet knows no other. Sizes and tracking are already set for a display
+  grotesque. No component names a font family directly, which is what keeps the
+  swap to two lines.
+- Mission Control has **not** been reworked yet. M11 rebuilt `/merchant`; the
+  observer screen still uses the older instrument grid, which is defensible
+  (density genuinely helps there) but the two now share a vocabulary rather than
+  a layout, and that was deliberate rather than accidental.
 - `credit_terms` is declared as a lever and implemented by nothing. It is
   discussed in the B2B persona as a closing lever the agent may not price, which
   is defensible, but it is not mechanised like the other three.
@@ -211,6 +225,9 @@ deployment.
 | D25 | 2026-08-27 | A policy edit is itself a Sakshi event (`POLICY_CHANGED`), and `zPolicyPatch` admits **four fields** | Two separate arguments. The event: a merchant loosening its own margin floor is precisely what an audit trail exists to record — without it, a cart approved at 8% under a 15% floor reads as a gate failure rather than a policy change made a minute earlier. The narrow patch: `category_taxonomy` feeds `SCOPE.CATEGORY_ALLOWLIST`, so accepting a whole `MerchantProfile` from a form would let a settings page widen a scope allowlist | Accepting a full profile and validating it (one forgotten field is an escalation); logging policy changes to stdout (unverifiable, and gone on restart); no logging at all (the demo beat becomes unexplainable) |
 | D26 | 2026-08-28 | Lever attribution on the model's path is checked against the **approved cart**, not against what the model called | The scripted agent knows what it pulled; the model chooses, so "which lever earned this?" has to be answered from evidence. A tool call is an intention. Requiring the tier price to *be* the price on the line, the add-on to *be* in the cart, and the substitute in with the original out means the console under-counts rather than over-counts, and over-counting is a lie about money in the one figure the brief leads with | Crediting every lever tool the model called (rewards curiosity, not revenue); asking the model to declare which levers it used (a self-report with an incentive attached); crediting from the last proposal rather than the approved one (credits offers the gate denied) |
 | D27 | 2026-08-28 | Every lever tool is present for **every** merchant, and answers `available: false` when the profile forbids it | Tool definitions are the head of the cached prompt prefix. Gating presence on `profile.levers` would fork that prefix per merchant and break D9's "one tool set, only the data behind it differs" — the same design rule that keeps a vertical from needing its own branch inside Dwaar. The permission check stays in `levers.ts`, so it is the same check the scripted agent passes through | Building the tool list from `profile.levers` (cache fork, and two code paths for one permission); one omnibus `pull_lever` tool with a discriminated union (worse schemas, worse descriptions, and the model picks wrong more often) |
+| D28 | 2026-08-29 | The merchant's order-shape limits are checked **before** the catalogue, and its value ceiling **before** the mandate's per-transaction cap | A cart refused for its shape — too many lines, too many units — should be refused before anything is priced; there is nothing to learn from pricing a basket that was never acceptable. And a seller declining a sale does not depend on what the buyer was authorised to spend, so the merchant's ceiling is answered first. Both limits stay independent and the rule list names which one bound | Checking them last with the other totals (prices a cart nobody would accept, and reports the buyer's limit for the seller's refusal); folding the merchant ceiling into `MANDATE.PER_TXN_CAP` (one rule, two parties, and an audit trail that cannot say whose limit stopped the sale) |
+| D29 | 2026-08-29 | An order-shape limit refuses; it is never auto-repaired | Repair exists to clamp a price up to the lowest legal figure, which is arithmetic. There is no correct number of products to silently delete from someone's basket — a cart that is too big is a negotiation to have, not a rounding error to fix | Trimming lines to fit (the agent silently ships a different order than the buyer agreed); repairing quantities down to the cap (same objection, and it changes what was bought) |
+| D30 | 2026-08-29 | `agent_categories` is editable and may only ever **narrow**; `category_taxonomy` stays unreachable | A merchant withdrawing a category from its own agent is subtracting from a permission it already holds, which is safe in a way adding one is not. The write site intersects the patch with the existing taxonomy, so widening is structurally impossible rather than merely validated against — the worst a crafted body achieves is narrowing itself. It gives the merchant the control they asked for without reopening the escalation D25 closed | Making `category_taxonomy` editable (a settings page that widens a scope allowlist); rejecting an out-of-taxonomy category with an error (equivalent, but fails open if the check is ever moved); leaving categories uneditable (declines a reasonable control for a risk that narrowing does not carry) |
 
 ## Failure-recovery audit
 
@@ -229,6 +246,92 @@ deployment.
 | F7 | Token replay | Reuse a spent `intent_token` | DENY `TOKEN.REPLAY`; no duplicate order | `REPLAY_BLOCKED` | ☑ |
 
 ## Changelog
+### 2026-08-29 — M11: the merchant's control surface, and the UI overhaul
+
+The merchant console was asked to become "as simple to understand as possible"
+and to give the merchant "the most control they can have" — two requests that
+look opposed and are not.
+
+**The idea that reconciles them: every control is a sentence with one number set
+into it.** "Never sell below 15% margin." "Always keep 5 units of anything in
+stock." "Never put more than 8 different products in one order." Twelve
+instructions written that way are easier to hold than four basis-point sliders
+were, because you read them as orders you are giving rather than fields you are
+configuring. Three groups, plainly named: what it may **charge**, what it may
+**sell**, how it may **negotiate**.
+
+Percent, rupees and units on screen; the gate's units on the wire. The rule id
+and the raw figure sit behind one *why you can trust this* toggle — demoted,
+never deleted, because the determinism is the whole reason to believe the
+simple version.
+
+**Five new rules in the gate, because the alternative was lying.** The controls
+asked for did not exist: `ORDER.VALUE_CAP`, `ORDER.UNIT_CAP`, `ORDER.LINE_CAP`,
+`INVENTORY.RESERVE`, `SCOPE.MERCHANT_CATEGORIES`, with five optional
+`MerchantProfile` fields behind them. In a product whose one claim is that a
+rule is real because Dwaar enforces it, a settings page that gated nothing would
+have been the single worst thing to ship. Fourteen tests, and the demo beat is
+one line: set the line cap to 1, and the next negotiation is refused on
+`ORDER.LINE_CAP` before the catalogue is touched.
+
+- D28: order-shape limits are checked **before** the catalogue and **before** the
+  mandate's caps. A cart refused for its shape should be refused before anything
+  is priced, and a seller declining a sale does not depend on what the buyer
+  could afford.
+- D29: a limit refuses; it never repairs. Repair clamps a price up to the floor,
+  and there is no correct number of products to silently delete from someone's
+  basket.
+- An unset limit is not a limit. `undefined` means the merchant never asked for
+  one, and the rule still appears in the list as passing with a limit of 0 — a
+  limit nobody set is still a limit that was considered, and the rule list is
+  the evidence. `0` from the form clears the field rather than storing a limit
+  of nothing, which would deny every cart.
+- `INVENTORY.RESERVE` is checked after `INVENTORY.INSUFFICIENT` so the two stay
+  distinguishable: "we do not have that many" and "we have that many and will
+  not sell down to nothing" are different sentences.
+
+**Categories: narrowing only (D30).** `agent_categories` is the editable half of
+scope. The write site intersects whatever it is given with the merchant's
+existing `category_taxonomy`, so a body naming `pharmaceuticals` has it dropped
+— verified against the running app, along with a body carrying
+`category_taxonomy` outright, which `zPolicyPatch` does not admit at all. The
+two category rules stay separate because they answer to different parties: the
+buyer's human declining to authorise the spend, versus the seller declining to
+sell it through an agent.
+
+**The UI, Direction C.** Three directions were drawn and the editorial one
+picked. The merchant screen now reads in one direction — the answer, then the
+instructions, then what happens next — rather than as four equal panels in the
+same two-column grid Mission Control uses. That grid being identical on both
+screens was the actual reason the merchant seat never felt like a different
+seat.
+
+- Uplift is the headline at 98px, not a 22px cell beside two figures of equal
+  weight. Three honest states: nothing negotiated, negotiated-and-beat-nothing,
+  and a real gain. A design that could only render the third would be a
+  brochure.
+- A display face (`--font-display`) joins the stack, reached only through that
+  token so no component names a family. It is Space Grotesk standing in for TASA
+  Orbiter Display SemiBold, which is on neither Google Fonts nor Fontshare and
+  needs its files; when they land in `apps/web/app/fonts/` the swap is
+  `layout.tsx` plus one `@theme` line. Plex Mono still sets every money column,
+  because tabular alignment beats voice in a table.
+- The envelope meters left the header on `/merchant` — the same budgets appear
+  there under *why a sale can still be refused*, and printing them twice would
+  make neither copy authoritative.
+
+**Seeded loose, on purpose.** The new limits ship wide enough that no existing
+scenario changes which rule denies it — F6 must still fail on the mandate's cap,
+not the merchant's — and `reserve_units` is deliberately absent from
+quick-commerce because `QC_GHEE_1L` is stocked at 1 for the F3 inventory race and
+any safety stock would refuse that sale before the race could happen. Tightening
+a limit until it bites is the demo, not the seed.
+
+**Observed, not asserted.** 232 tests (up from 218), `tsc --build` clean,
+production build clean. Against the running app: chaos 7/7 with the chain intact,
+conformance 75/75, `mcp:smoke` green, and a widening attempt on `agent_categories`
+dropped exactly the two categories the merchant does not hold.
+
 
 ### 2026-08-28 — M10: lever tools for the model, and a conformance check
 

@@ -2,11 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Header } from "./Header";
-import { EnvelopesPanel } from "./merchant/EnvelopesPanel";
+import { Authority } from "./merchant/Authority";
+import { Earnings } from "./merchant/Earnings";
+import { Instructions, type InstructionPatch } from "./merchant/Instructions";
 import { OrdersPanel } from "./merchant/OrdersPanel";
-import { PolicyPanel } from "./merchant/PolicyPanel";
-import { RevenuePanel } from "./merchant/RevenuePanel";
-import { TabStrip } from "./ui/TabStrip";
 import type { MerchantSummary, PolicyView, StateView } from "@/lib/types";
 
 /**
@@ -56,12 +55,7 @@ export function MerchantConsole() {
   }, [merchantId, refreshMerchant]);
 
   const save = useCallback(
-    async (patch: {
-      min_margin_bps: number;
-      max_discount_bps: number;
-      levers: string[];
-      commission_bps?: number;
-    }) => {
+    async (patch: InstructionPatch) => {
       if (merchantId === null) return;
       setSaving(true);
       setError(null);
@@ -114,50 +108,69 @@ export function MerchantConsole() {
     <div className="flex min-h-screen flex-col">
       <Header state={state} busy={busy} onFreeze={freeze} onReset={reset} current="merchant" />
 
-      <main className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:p-6">
-        <div className="flex min-h-[560px] flex-col gap-2 lg:h-[calc(100vh-9.5rem)]">
-          {/* One gate, two verticals. Switching here changes only the data. */}
-          {merchants.length > 1 && merchantId !== null ? (
-            <TabStrip
-              className="self-start"
-              value={merchantId}
-              onChange={setMerchantId}
-              disabled={saving || busy}
-              tabs={merchants.map((m) => ({
-                id: m.merchant_id,
-                label: m.display_name,
-                title: m.vertical,
-              }))}
-            />
-          ) : null}
-
-          <div className="grid min-h-0 flex-1 grid-rows-[minmax(280px,auto)_minmax(240px,auto)] gap-4 lg:grid-rows-[1.1fr_1fr]">
-            <RevenuePanel summary={summary} />
-            <OrdersPanel orders={summary?.orders ?? []} />
+      {/*
+        * One column, read top to bottom: the answer, then the orders that make
+        * it up, then what the agent is allowed to do next.
+        *
+        * Deliberately not the two-column instrument grid Mission Control uses.
+        * The observer watches several things at once and needs density; the
+        * merchant asks one question and then gives instructions, and a screen
+        * that reads in one direction is the difference between the two seats.
+        */}
+      <main className="mx-auto w-full max-w-[1320px] flex-1 px-6 py-9 lg:px-10 lg:py-12">
+        {/* One gate, two shops. Switching here changes only the data. */}
+        {merchants.length > 1 && merchantId !== null ? (
+          <div className="mb-8 flex flex-wrap items-center gap-6">
+            {merchants.map((m) => (
+              <button
+                key={m.merchant_id}
+                type="button"
+                onClick={() => setMerchantId(m.merchant_id)}
+                disabled={saving || busy}
+                aria-pressed={m.merchant_id === merchantId}
+                title={m.vertical}
+                className={`figures border-b-2 pb-1 text-[12.5px] transition-colors disabled:opacity-40 ${
+                  m.merchant_id === merchantId
+                    ? "border-brass text-paper"
+                    : "border-transparent text-paper-faint hover:text-paper-dim"
+                }`}
+              >
+                {m.display_name}
+              </button>
+            ))}
           </div>
+        ) : null}
+
+        <Earnings summary={summary} />
+
+        <div className="mt-12 border-t border-rule pt-9">
+          <Instructions
+            policy={policy}
+            saving={saving}
+            disabled={busy}
+            onSave={(patch) => void save(patch)}
+          />
         </div>
 
-        <div className="grid min-h-0 grid-rows-[minmax(420px,auto)_minmax(200px,auto)] gap-4 lg:h-[calc(100vh-9.5rem)] lg:grid-rows-[1.6fr_1fr]">
-          <div className="flex min-h-0 flex-col gap-2">
-            {error === null ? null : (
-              <p className="border border-vermilion-dim bg-vermilion/10 px-3 py-2 text-[12px] text-vermilion">
-                {error}
-              </p>
-            )}
-            <PolicyPanel
-              policy={policy}
-              saving={saving}
-              disabled={busy}
-              onSave={(patch) => void save(patch)}
-            />
-          </div>
+        {error === null ? (
+          <p className="sr-only" role="status" />
+        ) : (
+          <p
+            role="status"
+            className="mt-4 border border-vermilion-dim bg-vermilion/10 px-3 py-2 text-[12px] text-vermilion"
+          >
+            {error}
+          </p>
+        )}
 
-          <EnvelopesPanel envelopes={state?.envelopes ?? []} />
+        <div className="mt-12 grid grid-cols-1 gap-x-12 gap-y-10 border-t border-rule pt-9 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+          <OrdersPanel orders={summary?.orders ?? []} />
+          <Authority envelopes={state?.envelopes ?? []} />
         </div>
       </main>
 
-      <footer className="border-t border-rule px-6 py-3 text-center text-[11px] text-paper-faint">
-        The merchant sets the rule. Dwaar enforces it. Neither is the agent.
+      <footer className="border-t border-rule px-6 py-4 text-center text-[11px] text-paper-faint">
+        You set the rule. Dwaar enforces it. Neither of you is the agent.
       </footer>
     </div>
   );

@@ -55,6 +55,38 @@ export const zMerchantProfile = z.object({
   max_discount_bps: zBps,
   levers: z.array(zLever),
   category_taxonomy: z.array(z.string().min(1)),
+
+  /*
+   * The merchant's own limits on the shape of an order.
+   *
+   * Every one of these is optional, and absent means "no limit" -- an unset
+   * control is not a control, and a profile written before these existed must
+   * keep behaving exactly as it did. They are the merchant's side of the
+   * bargain: the mandate caps say what the *buyer* may spend, and these say
+   * what this merchant is willing to sell in one go, whatever the buyer's
+   * budget allows.
+   */
+
+  /** Largest single order this merchant will close. Its own ceiling, not the buyer's. */
+  max_order_paise: zPaise.optional(),
+  /** Most units, summed across every line, in one order. */
+  max_order_units: z.number().int().positive().optional(),
+  /** Most distinct lines in one order. Keeps a single cart pickable. */
+  max_order_lines: z.number().int().positive().optional(),
+  /** Safety stock: units of any SKU the agent may never sell into. */
+  reserve_units: z.number().int().nonnegative().optional(),
+
+  /**
+   * The categories this merchant's agent may sell from.
+   *
+   * A SUBSET of `category_taxonomy`, and absent means the whole taxonomy. This
+   * is the editable half of scope, and it only ever narrows: a merchant
+   * withdrawing a category from its own agent is subtracting from a permission
+   * it already holds. Widening lives in `category_taxonomy`, which no console
+   * may touch -- see `zPolicyPatch`.
+   */
+  agent_categories: z.array(z.string().min(1)).optional(),
+
   /**
    * Split settlement, for verticals where the money does not all belong to one
    * party (Razorpay Route). Dwaar never reads this: how a captured rupee is
@@ -88,6 +120,28 @@ export const zPolicyPatch = z.object({
   levers: z.array(zLever).optional(),
   /** Route commission only. The account it lands in is not editable here. */
   commission_bps: z.number().int().min(0).max(10_000).optional(),
+
+  /* The merchant's own order-shape limits. Zero or absent means no limit. */
+
+  /** Largest order this merchant will close. Capped at ₹1 crore -- above that it is a typo. */
+  max_order_paise: z.number().int().min(0).max(1_000_000_000).optional(),
+  /** Most units in one order. */
+  max_order_units: z.number().int().min(0).max(100_000).optional(),
+  /** Most distinct lines in one order. */
+  max_order_lines: z.number().int().min(0).max(500).optional(),
+  /** Safety stock held back from the agent on every SKU. */
+  reserve_units: z.number().int().min(0).max(10_000).optional(),
+
+  /**
+   * Categories the agent may sell from.
+   *
+   * The schema cannot enforce the property that matters -- that this is a
+   * subset of the merchant's own `category_taxonomy` -- because the taxonomy is
+   * not in the patch. That check lives at the write site and is the reason this
+   * field is safe to expose at all: it may only ever narrow. `category_taxonomy`
+   * itself remains absent from this schema, permanently.
+   */
+  agent_categories: z.array(z.string().min(1)).optional(),
 });
 export type PolicyPatch = z.infer<typeof zPolicyPatch>;
 
@@ -297,11 +351,27 @@ export const RULE_IDS = [
   "MANDATE.VELOCITY",
   "SCOPE.MERCHANT_ALLOWLIST",
   "SCOPE.CATEGORY_ALLOWLIST",
+  /**
+   * The merchant withdrew this category from its own agent.
+   *
+   * Distinct from SCOPE.CATEGORY_ALLOWLIST, which is the *buyer's* scope: that
+   * one says the human never authorised spending here, this one says the seller
+   * declines to sell it through an agent. Different parties, different refusals.
+   */
+  "SCOPE.MERCHANT_CATEGORIES",
   /** Proposal references a SKU the merchant does not sell. */
   "CATALOG.UNKNOWN_SKU",
   /** Quantity below the SKU minimum order quantity (B2B). */
   "CATALOG.BELOW_MOQ",
   "INVENTORY.INSUFFICIENT",
+  /** Filling this line would eat into the merchant's safety stock. */
+  "INVENTORY.RESERVE",
+  /** Cart total exceeds the largest order this merchant will close. */
+  "ORDER.VALUE_CAP",
+  /** Too many units in one order. */
+  "ORDER.UNIT_CAP",
+  /** Too many distinct lines in one order. */
+  "ORDER.LINE_CAP",
   /** Offered unit price below cost * (1 + min_margin_bps). */
   "MARGIN.FLOOR_BREACH",
   /** Discount off list exceeds the merchant ceiling. */

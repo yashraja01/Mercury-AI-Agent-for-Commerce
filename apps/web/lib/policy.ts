@@ -75,6 +75,48 @@ export function applyPolicyPatch(current: MerchantProfile, patch: PolicyPatch): 
     next.settlement = { ...current.settlement, commission_bps: patch.commission_bps };
   }
 
+  /*
+   * The merchant's own order-shape limits.
+   *
+   * Zero and undefined mean the same thing to the gate -- no limit -- but they
+   * are different gestures from a form: undefined is "I did not touch this",
+   * zero is "I am switching this off". So zero clears the field rather than
+   * storing a limit of nothing, which would deny every cart.
+   */
+  for (const field of ["max_order_paise", "max_order_units", "max_order_lines", "reserve_units"] as const) {
+    const given = patch[field];
+    if (given === undefined) continue;
+    const before = current[field];
+    const after = given === 0 ? undefined : given;
+    if (before === after) continue;
+    changes.push({ field, from: before ?? "none", to: after ?? "none" });
+    if (after === undefined) delete next[field];
+    else next[field] = after as never;
+  }
+
+  /*
+   * Categories the agent may sell from.
+   *
+   * The one field here that could be an escalation, so it is the one field that
+   * gets an explicit guard: anything outside the merchant's existing taxonomy is
+   * dropped. A caller cannot widen its own scope by naming a category it does
+   * not already hold -- the worst a crafted body achieves is narrowing itself,
+   * and `category_taxonomy` is not reachable from this patch at all.
+   */
+  if (patch.agent_categories !== undefined) {
+    const permitted = new Set(current.category_taxonomy);
+    const narrowed = [...new Set(patch.agent_categories)].filter((c) => permitted.has(c)).sort();
+    const before = [...(current.agent_categories ?? current.category_taxonomy)].sort().join(",");
+    const after = narrowed.join(",");
+    if (before !== after) {
+      changes.push({ field: "agent_categories", from: before, to: after });
+      // Selling the whole taxonomy is the absence of a restriction, not a
+      // restriction that happens to list everything.
+      if (narrowed.length === current.category_taxonomy.length) delete next.agent_categories;
+      else next.agent_categories = narrowed;
+    }
+  }
+
   return { next, changes };
 }
 
@@ -85,6 +127,13 @@ export function policyDrift(current: MerchantProfile, seeded: MerchantProfile): 
     min_margin_bps: current.min_margin_bps,
     max_discount_bps: current.max_discount_bps,
     levers: current.levers,
+    // `?? 0` rather than omitting: a field the merchant cleared has drifted from
+    // a seed that set one, and omitting it would report the profile as pristine.
+    max_order_paise: current.max_order_paise ?? 0,
+    max_order_units: current.max_order_units ?? 0,
+    max_order_lines: current.max_order_lines ?? 0,
+    reserve_units: current.reserve_units ?? 0,
+    agent_categories: current.agent_categories ?? current.category_taxonomy,
     ...(current.settlement === undefined
       ? {}
       : { commission_bps: current.settlement.commission_bps }),

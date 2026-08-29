@@ -36,6 +36,17 @@
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
   --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
   --font-deva: var(--font-plex-deva), var(--font-plex-sans), sans-serif;
+
+  /*
+   * The display face, reached only through this token.
+   *
+   * Currently Space Grotesk, standing in for TASA Orbiter Display SemiBold --
+   * Orbiter is not servable from Google Fonts, so it needs the real files. When
+   * they land in `app/fonts/`, this line and the `next/font` declaration in
+   * layout.tsx are the only two places that change. No component names a family
+   * directly, which is what keeps that true.
+   */
+  --font-display: var(--font-display-face), var(--font-plex-sans), sans-serif;
 }
 
 :root {
@@ -79,6 +90,56 @@ body {
     color-mix(in srgb, var(--color-brass) 7%, transparent),
     transparent
   );
+}
+
+/*
+ * The display face. Headlines, the wordmark, and any figure that is the answer
+ * to the screen's question rather than one number among several.
+ *
+ * Never on a money column: `.figures` sets those in the mono, because tabular
+ * alignment is worth more than voice in a table.
+ */
+.display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+/* The big one. Tabular, because it is still money. */
+.display-figure {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+  line-height: 0.94;
+}
+
+/*
+ * An instruction: a sentence with one number set into it.
+ *
+ * The merchant console is a list of standing orders rather than a form, and
+ * this is the number inside one. Underlined rather than boxed -- a box would
+ * make it a field again.
+ */
+.instruction-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--color-paper);
+  border-bottom: 1px solid var(--color-rule-bright);
+  padding-bottom: 1px;
+  background: none;
+  text-align: center;
+}
+
+.instruction-value:focus {
+  outline: none;
+  border-bottom-color: var(--color-brass);
+  color: var(--color-brass);
+}
+
+.instruction-value:disabled {
+  opacity: 0.45;
 }
 
 /* Small caps eyebrow, used for every panel and field label. */

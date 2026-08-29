@@ -37,6 +37,26 @@ export function bps(n: number, opts?: { sign?: boolean }): string {
   return opts?.sign === true && n > 0 ? `+${body}` : body;
 }
 
+/**
+ * Basis points as a plain percentage, for a merchant reading a sentence.
+ *
+ * `bps()` is for the operator's surfaces, where the unit is the point. This is
+ * for "Never sell below 15% margin", where the unit would be noise: nobody sets
+ * a floor thinking in ten-thousandths.
+ */
+export function percent(bpsValue: number): string {
+  return `${Number((bpsValue / 100).toFixed(2))}%`;
+}
+
+/** Rupees with no paise, for a figure being typed rather than reported. */
+export function rupeesRound(p: number): string {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(p / 100);
+}
+
 export function shortHash(h: string, n = 10): string {
   return h.slice(0, n);
 }

@@ -108,6 +108,13 @@ export interface MerchantProfileView {
   max_discount_bps: number;
   levers: string[];
   category_taxonomy: string[];
+  /* The merchant's own limits on the shape of an order. Absent means no limit. */
+  max_order_paise?: number;
+  max_order_units?: number;
+  max_order_lines?: number;
+  reserve_units?: number;
+  /** A subset of `category_taxonomy`. Absent means the whole taxonomy. */
+  agent_categories?: string[];
   settlement?: { mode: string; commission_bps: number; commission_account_id: string };
 }
 

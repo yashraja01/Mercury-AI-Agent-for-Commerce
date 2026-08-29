@@ -95,6 +95,14 @@ type MerchantProfile = {
   max_discount_bps: number        // discount ceiling
   levers: ("bundle"|"substitute"|"bulk_tier"|"credit_terms")[]
   category_taxonomy: string[]
+
+  // The merchant's own limits on the shape of an order. Absent means no limit.
+  max_order_paise?: number        // ORDER.VALUE_CAP
+  max_order_units?: number        // ORDER.UNIT_CAP
+  max_order_lines?: number        // ORDER.LINE_CAP
+  reserve_units?: number          // INVENTORY.RESERVE
+  agent_categories?: string[]     // SCOPE.MERCHANT_CATEGORIES; ⊆ category_taxonomy
+
   settlement?: {                  // Route. Dwaar never reads this.
     mode: "route"
     commission_bps: number
@@ -102,6 +110,19 @@ type MerchantProfile = {
   }
 }
 ```
+
+The five order-shape fields are the **merchant's** side of the bargain, and they
+sit beside the mandate's caps rather than replacing them: the mandate says what
+the buyer was authorised to spend, these say what this merchant is willing to
+sell in one go. Either can bind first, and the rule list names which did.
+`ORDER.VALUE_CAP` is checked *before* `MANDATE.PER_TXN_CAP` — a seller declining
+a sale does not depend on what the buyer could afford.
+
+`agent_categories` is the editable half of scope, and it may **only ever
+narrow**. A merchant withdrawing a category from its own agent is subtracting
+from a permission it already holds; widening lives in `category_taxonomy`, which
+no console may touch. The subset is enforced at the write site, not in the
+schema — the taxonomy is not in the patch, so Zod could not see it.
 
 `settlement` is the one field on the profile the gate ignores on purpose. How a
 captured rupee is divided afterwards is not an authorisation question, and
@@ -124,7 +145,7 @@ npm run dev         # Mission Control + merchant console on :3000
 | `npm run chaos` | Runs the failure-audit table F1-F7 and prints what it verified (needs `npm run dev`) |
 | `npm run chaos -- --reset` | Same, but re-seeds the demo bench first |
 | `npm run conformance` | Checks the Agent Card and every feed against the shape they claim, and that no public document leaks cost, the margin floor or a supplier account (needs `npm run dev`) |
-| `npm test` | 218 tests. No API key, no network, no spend |
+| `npm test` | 232 tests. No API key, no network, no spend |
 | `npm run verify` | Re-walks the Sakshi chain independently |
 | `npm run build` | Packages, then `scripts/`, then the Next app |
 
@@ -366,21 +387,38 @@ Routes are all `runtime = "nodejs"` -- `node:sqlite` does not exist on edge.
 
 ### The merchant console
 
-Four panels, and the only screen in the app that *decides* anything.
+The only screen in the app that *decides* anything, and the only one that reads
+in a single direction — an answer, then instructions, then what happens next.
+Deliberately not Mission Control's two-column instrument grid: the observer
+watches several things at once and needs density, the merchant asks one question
+and then gives orders, and the layouts should not be interchangeable.
 
-| Panel | Shows | Why it exists |
+| Section | Shows | Why it exists |
 |---|---|---|
-| Revenue | Buyer asked vs gate approved, **uplift in ₹ and bps**, per-lever attribution | Goal 1, measured rather than asserted |
-| Orders | Recent orders, order status beside Razorpay's payment status | The two advance independently (F5) |
-| Policy | Margin floor, discount ceiling, lever toggles, Route commission — **editable** | Goal 3 made touchable |
-| Authority | Per-mandate reserved / consumed / remaining, debits used | Both limits bind; either can run out first |
+| Earnings | **The headline**: what the agent earned over a plain price list, then buyer-asked vs gate-approved and the lever that did it | Goal 1, as the screen's answer rather than one cell among four |
+| Standing instructions | Twelve **editable** controls in three groups — what it may charge, what it may sell, how it may negotiate | Goal 3 made touchable, and the merchant's control surface |
+| What it sold | Recent orders, one status foregrounded; the order/payment split behind a toggle | The two advance independently (F5), but that is not a first read |
+| Why a sale can be refused | Per-mandate remaining spend and remaining orders | Both limits bind; either can run out first |
 
-Every figure in Revenue is summed from `BASKET_VALUED` entries in the chain, not
+**Every control is a sentence with one number set into it** — "Never sell below
+15% margin", "Always keep 5 units of anything in stock". A merchant thinks in
+percent and rupees and units, never in basis points, and a board that reads as
+standing orders holds twelve controls more easily than a form of four sliders
+held four. The rule id and the raw figure the gate reads sit one toggle away
+under *why you can trust this*: demoted, never deleted, because the determinism
+is the reason to trust any of it.
+
+**No control here is advisory.** Each one is a Dwaar rule, and the gate refuses
+a cart that breaks it — set the line cap to 1 and the very next negotiation is
+denied on `ORDER.LINE_CAP`. A control that gated nothing would be the one kind
+of lie this product cannot tell.
+
+Every figure in Earnings is summed from `BASKET_VALUED` entries in the chain, not
 from a counter kept somewhere convenient — so the number the merchant sees is
 the number an outside party reaches by walking the ledger. If those two could
 disagree, the audit trail would be a copy of the truth rather than the truth.
 
-**The Policy panel writes through.** `Engine.propose` re-reads the profile on
+**The instructions write through.** `Engine.propose` re-reads the profile on
 every evaluation, so a change lands on the next negotiation with no restart and
 no cache to invalidate — a margin floor you must redeploy to move is a constant,
 not a control. Each field is labelled with the Dwaar rule it drives
@@ -396,9 +434,19 @@ follows when that new figure breaks something else.
 
 **A merchant may not edit its own identity or `category_taxonomy`.** The
 taxonomy feeds `SCOPE.CATEGORY_ALLOWLIST`, so a form that could widen it would
-be a privilege escalation wearing a settings page. `zPolicyPatch` admits four
-fields and copies the rest; there is no spread of caller-supplied keys anywhere
-in the write path.
+be a privilege escalation wearing a settings page. `zPolicyPatch` names the
+fields it admits and copies the rest; there is no spread of caller-supplied keys
+anywhere in the write path.
+
+What the merchant *may* do is withdraw a category from its own agent, through
+`agent_categories`. That is the same permission read in the narrowing direction,
+and the write site intersects whatever it is given with the existing taxonomy —
+so a body naming a category the merchant does not hold has that category
+dropped, and the worst a crafted request achieves is narrowing itself. The two
+category rules stay distinct on purpose: `SCOPE.CATEGORY_ALLOWLIST` is the
+buyer's human declining to authorise the spend, `SCOPE.MERCHANT_CATEGORIES` is
+the seller declining to sell it through an agent. Different parties, different
+refusals, and an audit trail that says which.
 
 ## 14. Money rule
 

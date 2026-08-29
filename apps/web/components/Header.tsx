@@ -85,14 +85,22 @@ export function Header({
           </nav>
         </div>
 
+        {/*
+          * The meters belong to the observer's seat. The merchant console shows
+          * the same budgets under "why a sale can still be refused", where they
+          * answer a question the merchant actually has -- printing them twice on
+          * one page would make neither copy the authoritative one.
+          */}
         <div className="flex min-w-0 flex-1 flex-col gap-5 sm:flex-row">
-          {(state?.envelopes ?? []).map((e) => (
-            <EnvelopeMeter
-              key={e.mandate_id}
-              envelope={e}
-              label={envelopeLabel(e.mandate_id)}
-            />
-          ))}
+          {current === "merchant"
+            ? null
+            : (state?.envelopes ?? []).map((e) => (
+                <EnvelopeMeter
+                  key={e.mandate_id}
+                  envelope={e}
+                  label={envelopeLabel(e.mandate_id)}
+                />
+              ))}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">

@@ -41,8 +41,10 @@ describe("Dwaar happy path", () => {
   it("records a passing evaluation for every rule it checked", () => {
     const d = evaluate(inputOf());
     const ids = new Set(d.rules.map((r) => r.rule_id));
-    // All fifteen rules should be represented on a clean pass.
-    expect(ids.size).toBe(15);
+    // Every rule should be represented on a clean pass, including the five
+    // merchant-side limits this profile leaves unset -- a limit nobody set is
+    // still a limit that was considered, and the rule list is the evidence.
+    expect(ids.size).toBe(20);
     expect(d.rules.every((r) => r.passed)).toBe(true);
   });
 
@@ -475,5 +477,225 @@ describe("one gate, two verticals", () => {
     expect(d.outcome).toBe("ALLOW");
     if (d.outcome === "DENY") throw new Error("unreachable");
     expect(d.computed_paise).toBe(880_000);
+  });
+});
+
+/* ------------------------------------------------- the merchant's own limits */
+
+/**
+ * The five limits a merchant sets on the shape of an order.
+ *
+ * These are the seller's refusals, and they are deliberately separate from the
+ * mandate's: the mandate says what the buyer was authorised to spend, these say
+ * what this merchant is willing to sell in one go. Either can bind first, and
+ * the rule list has to say which one did -- a merchant reading its own audit
+ * trail should never have to guess whose limit stopped a sale.
+ *
+ * Every one of them is optional, and the first test here is the one that
+ * matters most: absent means absent. A profile written before these existed
+ * must behave exactly as it did.
+ */
+describe("the merchant's own order limits", () => {
+  it("does not constrain a profile that sets none of them", () => {
+    // PROFILE carries no order limits at all.
+    const d = evaluate(
+      inputOf({
+        proposal: proposalOf([
+          { sku: "SKU_RICE_5KG", qty: 2, offer_unit_paise: 55_000 },
+          { sku: "SKU_TEA_250G", qty: 3, offer_unit_paise: 22_000 },
+        ]),
+      }),
+    );
+    expect(d.outcome).not.toBe("DENY");
+    // Recorded as considered, with a limit of zero standing for "unset".
+    for (const rule of ["ORDER.LINE_CAP", "ORDER.UNIT_CAP", "ORDER.VALUE_CAP"] as const) {
+      const evaluated = d.rules.find((r) => r.rule_id === rule);
+      expect(evaluated?.passed).toBe(true);
+      expect(evaluated?.limit).toBe(0);
+    }
+  });
+
+  it("refuses a cart with more lines than the merchant accepts", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, max_order_lines: 1 },
+        proposal: proposalOf([
+          { sku: "SKU_RICE_5KG", qty: 1, offer_unit_paise: 55_000 },
+          { sku: "SKU_TEA_250G", qty: 1, offer_unit_paise: 22_000 },
+        ]),
+      }),
+    );
+    const v = expectDeny(d, "ORDER.LINE_CAP");
+    expect(v.observed).toBe(2);
+    expect(v.limit).toBe(1);
+  });
+
+  it("refuses a cart with more units than the merchant accepts", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, max_order_units: 5 },
+        proposal: proposalOf([
+          { sku: "SKU_RICE_5KG", qty: 4, offer_unit_paise: 55_000 },
+          { sku: "SKU_TEA_250G", qty: 2, offer_unit_paise: 22_000 },
+        ]),
+      }),
+    );
+    const v = expectDeny(d, "ORDER.UNIT_CAP");
+    // Summed across lines, not per line.
+    expect(v.observed).toBe(6);
+    expect(v.limit).toBe(5);
+  });
+
+  it("refuses a cart above the largest order the merchant will close", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, max_order_paise: paise(100_000) },
+        proposal: proposalOf([{ sku: "SKU_RICE_5KG", qty: 2, offer_unit_paise: 55_000 }]),
+      }),
+    );
+    const v = expectDeny(d, "ORDER.VALUE_CAP");
+    expect(v.observed).toBe(110_000);
+    expect(v.limit).toBe(100_000);
+  });
+
+  /*
+   * The ordering claim, tested rather than asserted. Both ceilings are breached
+   * by this cart; the merchant's is checked first because the seller declining
+   * a sale does not depend on what the buyer was authorised to spend.
+   */
+  it("reports the merchant's ceiling before the buyer's when both are breached", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, max_order_paise: paise(100_000) },
+        signed_mandate: signed(mandateOf({ max_per_txn_paise: paise(120_000) })),
+        proposal: proposalOf([{ sku: "SKU_RICE_5KG", qty: 3, offer_unit_paise: 55_000 }]),
+      }),
+    );
+    expectDeny(d, "ORDER.VALUE_CAP");
+    // The buyer's cap was never reached, so it is not in the rule list at all.
+    expect(d.rules.some((r) => r.rule_id === "MANDATE.PER_TXN_CAP")).toBe(false);
+  });
+
+  it("leaves the buyer's per-transaction cap binding when the merchant's is looser", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, max_order_paise: paise(500_000) },
+        signed_mandate: signed(mandateOf({ max_per_txn_paise: paise(100_000) })),
+        proposal: proposalOf([{ sku: "SKU_RICE_5KG", qty: 3, offer_unit_paise: 55_000 }]),
+      }),
+    );
+    expectDeny(d, "MANDATE.PER_TXN_CAP");
+  });
+
+  /* ------------------------------------------------------------- safety stock */
+
+  it("will not sell into the merchant's safety stock", () => {
+    // SKU_OIL_1L is stocked at 8. Holding 5 back leaves 3 sellable.
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, reserve_units: 5 },
+        proposal: proposalOf([{ sku: "SKU_OIL_1L", qty: 4, offer_unit_paise: 17_000 }]),
+      }),
+    );
+    const v = expectDeny(d, "INVENTORY.RESERVE");
+    expect(v.observed).toBe(4); // what would be left
+    expect(v.limit).toBe(5); // what must be left
+  });
+
+  it("sells right down to the safety stock but no further", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, reserve_units: 5 },
+        proposal: proposalOf([{ sku: "SKU_OIL_1L", qty: 3, offer_unit_paise: 17_000 }]),
+      }),
+    );
+    expect(d.outcome).not.toBe("DENY");
+  });
+
+  /*
+   * Two different sentences, and the audit trail has to keep them apart:
+   * "we do not have that many" is not "we have that many and will not sell
+   * down to nothing".
+   */
+  it("distinguishes not enough stock from safety stock", () => {
+    const short = evaluate(
+      inputOf({
+        profile: { ...PROFILE, reserve_units: 5 },
+        proposal: proposalOf([{ sku: "SKU_OIL_1L", qty: 20, offer_unit_paise: 17_000 }]),
+      }),
+    );
+    expectDeny(short, "INVENTORY.INSUFFICIENT");
+  });
+
+  /* --------------------------------------------------------- agent categories */
+
+  it("refuses a category the merchant withdrew from its agent", () => {
+    const d = evaluate(
+      inputOf({
+        // The taxonomy still carries beverages; the agent may no longer sell it.
+        profile: { ...PROFILE, agent_categories: ["staples"] },
+        proposal: proposalOf([{ sku: "SKU_TEA_250G", qty: 1, offer_unit_paise: 22_000 }]),
+      }),
+    );
+    expectDeny(d, "SCOPE.MERCHANT_CATEGORIES");
+  });
+
+  it("still sells a category the merchant kept", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, agent_categories: ["staples"] },
+        proposal: proposalOf([{ sku: "SKU_RICE_5KG", qty: 1, offer_unit_paise: 55_000 }]),
+      }),
+    );
+    expect(d.outcome).not.toBe("DENY");
+  });
+
+  /*
+   * The two category rules answer to different parties. The buyer's human never
+   * authorised this category; the merchant is happy to sell it. Reporting the
+   * merchant's refusal here would tell the buyer their own mandate was fine.
+   */
+  it("keeps the buyer's category scope distinct from the merchant's", () => {
+    const d = evaluate(
+      inputOf({
+        profile: { ...PROFILE, agent_categories: ["staples", "beverages"] },
+        signed_mandate: signed(
+          mandateOf({
+            scope: { merchant_allowlist: ["mch_demo"], category_allowlist: ["staples"] },
+          }),
+        ),
+        proposal: proposalOf([{ sku: "SKU_TEA_250G", qty: 1, offer_unit_paise: 22_000 }]),
+      }),
+    );
+    expectDeny(d, "SCOPE.CATEGORY_ALLOWLIST");
+  });
+
+  it("treats an absent agent_categories as the whole taxonomy", () => {
+    const d = evaluate(
+      inputOf({
+        proposal: proposalOf([{ sku: "SKU_TEA_250G", qty: 1, offer_unit_paise: 22_000 }]),
+      }),
+    );
+    expect(d.outcome).not.toBe("DENY");
+    const evaluated = d.rules.find((r) => r.rule_id === "SCOPE.MERCHANT_CATEGORIES");
+    expect(evaluated?.passed).toBe(true);
+  });
+
+  /*
+   * A limit refuses; it never quietly reprices. Repair exists to clamp a price
+   * up to the floor, and a cart that is simply too big is not a pricing error --
+   * there is no correct number of products to silently delete from someone's
+   * basket.
+   */
+  it("is refused rather than repaired", () => {
+    const profile = { ...PROFILE, max_order_lines: 1 };
+    const proposal = proposalOf([
+      { sku: "SKU_RICE_5KG", qty: 1, offer_unit_paise: 55_000 },
+      { sku: "SKU_TEA_250G", qty: 1, offer_unit_paise: 22_000 },
+    ]);
+    const repaired = repairProposal(proposal, profile, catalogOf());
+    expect(repaired.changed).toBe(false);
+    expect(repaired.proposal.lines).toHaveLength(2);
+    expectDeny(evaluate(inputOf({ profile, proposal: repaired.proposal })), "ORDER.LINE_CAP");
   });
 });

@@ -20,6 +20,22 @@ export const QUICK_COMMERCE: MerchantProfile = {
   max_discount_bps: 2_000,
   levers: ["bundle", "substitute"],
   category_taxonomy: ["staples", "beverages", "snacks", "household"],
+  /*
+   * Order-shape limits, seeded deliberately loose.
+   *
+   * They exist so the merchant console has real values to show rather than a
+   * board of blanks, and they are set wide enough that no seeded scenario
+   * changes which rule denies it -- the F6 basket must still fail on the
+   * mandate's per-transaction cap, not on this one. Tightening them until they
+   * bite is the demo, not the seed.
+   *
+   * `reserve_units` is deliberately absent here: QC_GHEE_1L is stocked at 1 for
+   * the F3 inventory race, and any safety stock would make that row fail on
+   * INVENTORY.RESERVE before it could ever reach the contention it tests.
+   */
+  max_order_paise: rupees(20_000),
+  max_order_units: 200,
+  max_order_lines: 12,
 };
 
 export const QUICK_COMMERCE_ITEMS: CatalogItem[] = [
@@ -47,6 +63,16 @@ export const B2B_PROCUREMENT: MerchantProfile = {
   max_discount_bps: 3_500,
   levers: ["bulk_tier", "credit_terms", "substitute"],
   category_taxonomy: ["staples", "beverages", "packaging"],
+  /*
+   * Above the mandate's own ₹1,50,000 per-transaction cap, on purpose: the
+   * buyer's limit should still be the one that binds first on a seeded run, so
+   * this reads as the merchant's separate ceiling rather than a duplicate of
+   * the buyer's. Wholesale holds five units of everything back.
+   */
+  max_order_paise: rupees(200_000),
+  max_order_units: 500,
+  max_order_lines: 20,
+  reserve_units: 5,
   /*
    * Wholesale is a multi-vendor floor: the buyer sees one cart and pays once,
    * and two different suppliers have to be paid out of it. Route does the

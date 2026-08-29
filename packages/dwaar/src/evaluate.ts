@@ -230,8 +230,56 @@ export function evaluate(input: DwaarInput): Decision {
   }
   rules.push(ok("SCOPE.MERCHANT_ALLOWLIST", 1, 1, "Merchant is in the mandate allowlist."));
 
+  /* 4b. The shape of the order, as the merchant limits it.
+   *
+   * These are checked before the catalogue is touched, because they are
+   * properties of the proposal itself -- how many lines, how many units -- and a
+   * cart refused for its shape should be refused before anything is priced.
+   *
+   * An unset limit is not a limit: `undefined` means the merchant never asked
+   * for one, and the rule is recorded as passing with a limit of 0 so the rule
+   * list still shows it was considered. */
+  const lineCount = proposal.lines.length;
+  if (profile.max_order_lines !== undefined && lineCount > profile.max_order_lines) {
+    return deny(
+      rules,
+      bad(
+        "ORDER.LINE_CAP",
+        lineCount,
+        profile.max_order_lines,
+        `Cart has ${lineCount} lines; this merchant accepts at most ${profile.max_order_lines} in one order.`,
+      ),
+    );
+  }
+  rules.push(
+    ok("ORDER.LINE_CAP", lineCount, profile.max_order_lines ?? 0, "Within the merchant line limit."),
+  );
+
+  const unitCount = proposal.lines.reduce((n, l) => n + l.qty, 0);
+  if (profile.max_order_units !== undefined && unitCount > profile.max_order_units) {
+    return deny(
+      rules,
+      bad(
+        "ORDER.UNIT_CAP",
+        unitCount,
+        profile.max_order_units,
+        `Cart has ${unitCount} units; this merchant accepts at most ${profile.max_order_units} in one order.`,
+      ),
+    );
+  }
+  rules.push(
+    ok("ORDER.UNIT_CAP", unitCount, profile.max_order_units ?? 0, "Within the merchant unit limit."),
+  );
+
   /* 5-9. Per-line checks and repricing. */
   const allowedCategories = new Set(mandate.scope.category_allowlist);
+  /*
+   * What the merchant permits its own agent to sell. Absent means the whole
+   * taxonomy -- a merchant that has never narrowed anything is not thereby
+   * selling nothing.
+   */
+  const merchantCategories =
+    profile.agent_categories === undefined ? undefined : new Set(profile.agent_categories);
   const lines: CartLine[] = [];
 
   for (const pl of proposal.lines) {
@@ -268,6 +316,18 @@ export function evaluate(input: DwaarInput): Decision {
       );
     }
 
+    if (merchantCategories !== undefined && !merchantCategories.has(item.category)) {
+      return deny(
+        rules,
+        bad(
+          "SCOPE.MERCHANT_CATEGORIES",
+          0,
+          1,
+          `This merchant does not sell "${item.category}" through its agent (SKU ${pl.sku}).`,
+        ),
+      );
+    }
+
     if (item.stock < pl.qty) {
       return deny(
         rules,
@@ -276,6 +336,25 @@ export function evaluate(input: DwaarInput): Decision {
           item.stock,
           pl.qty,
           `SKU ${pl.sku} has ${item.stock} in stock; ${pl.qty} requested.`,
+        ),
+      );
+    }
+
+    /*
+     * Safety stock. Checked after the plain stock check so the two failures
+     * stay distinguishable: "we do not have that many" and "we have that many
+     * but will not sell down to nothing" are different sentences, and a
+     * merchant reading its own audit trail should be able to tell them apart.
+     */
+    const reserve = profile.reserve_units ?? 0;
+    if (reserve > 0 && item.stock - pl.qty < reserve) {
+      return deny(
+        rules,
+        bad(
+          "INVENTORY.RESERVE",
+          item.stock - pl.qty,
+          reserve,
+          `SKU ${pl.sku} would be left with ${item.stock - pl.qty} in stock; this merchant holds ${reserve} back.`,
         ),
       );
     }
@@ -310,9 +389,22 @@ export function evaluate(input: DwaarInput): Decision {
   }
 
   rules.push(ok("SCOPE.CATEGORY_ALLOWLIST", 1, 1, "All line categories are in the mandate allowlist."));
+  rules.push(
+    ok(
+      "SCOPE.MERCHANT_CATEGORIES",
+      1,
+      1,
+      merchantCategories === undefined
+        ? "The merchant sells its whole taxonomy through the agent."
+        : "Every line is in a category the merchant sells through its agent.",
+    ),
+  );
   rules.push(ok("CATALOG.UNKNOWN_SKU", 1, 1, "All SKUs exist in the merchant catalogue."));
   rules.push(ok("CATALOG.BELOW_MOQ", 1, 1, "All quantities meet minimum order quantity."));
   rules.push(ok("INVENTORY.INSUFFICIENT", 1, 1, "Sufficient stock for every line."));
+  rules.push(
+    ok("INVENTORY.RESERVE", 1, profile.reserve_units ?? 0, "Every line leaves the safety stock intact."),
+  );
   rules.push(ok("MARGIN.FLOOR_BREACH", 1, 1, "Every unit price is at or above the margin floor."));
   rules.push(ok("DISCOUNT.BPS_CAP", 1, 1, "Every discount is within the merchant ceiling."));
 
@@ -338,6 +430,32 @@ export function evaluate(input: DwaarInput): Decision {
       proposal.quoted_total_paise,
       computed,
       "Agent arithmetic matches the recomputed total.",
+    ),
+  );
+
+  /* 10b. The merchant's own ceiling on a single order.
+   *
+   * Checked before the mandate's per-transaction cap, and deliberately so: this
+   * is the seller declining the sale, which it may do for its own reasons and
+   * before anyone asks what the buyer was authorised to spend. The two limits
+   * are independent and either can bind first. */
+  if (profile.max_order_paise !== undefined && computed > profile.max_order_paise) {
+    return deny(
+      rules,
+      bad(
+        "ORDER.VALUE_CAP",
+        computed,
+        profile.max_order_paise,
+        `Cart totals ${formatINR(computed)}; this merchant closes orders up to ${formatINR(profile.max_order_paise)}.`,
+      ),
+    );
+  }
+  rules.push(
+    ok(
+      "ORDER.VALUE_CAP",
+      computed,
+      profile.max_order_paise ?? 0,
+      "Within the largest order this merchant will close.",
     ),
   );
 
