@@ -90,7 +90,7 @@ function Verdict({ event }: { event: Extract<TheatreEvent, { type: "verdict" }> 
         <span className="deva text-[15px] text-paper-dim">
           द्वार <span className="eyebrow ml-1">dwaar</span>
         </span>
-        <span className={`font-mono text-[13px] font-semibold uppercase tracking-[0.16em] ${style.text}`}>
+        <span className={`display text-[14px] tracking-[0.06em] ${style.text}`}>
           {style.label}
         </span>
       </div>

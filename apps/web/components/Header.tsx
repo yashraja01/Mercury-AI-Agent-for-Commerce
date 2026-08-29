@@ -42,7 +42,7 @@ export function Header({
       <div className="mx-auto flex max-w-[1680px] flex-col gap-5 px-6 py-4 xl:flex-row xl:items-center xl:gap-10">
         <div className="flex items-center gap-5">
           <div>
-            <h1 className="font-mono text-[22px] font-semibold tracking-[0.22em] text-paper">
+            <h1 className="display text-[22px] tracking-[0.22em] text-paper">
               MERCURY
             </h1>
             <p className="mt-0.5 text-[12px] leading-snug text-paper-dim">

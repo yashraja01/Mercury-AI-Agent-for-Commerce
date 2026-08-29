@@ -69,7 +69,7 @@ export function DwaarPanel({
         <p className={`display text-[19px] leading-snug ${tone}`}>{headline}</p>
 
         <div className="mt-4 grid grid-cols-2 gap-px bg-rule">
-          <div className="bg-ink-raised px-3 py-3">
+          <div className="bg-ink px-3 py-3">
             <span className="eyebrow">The agent said</span>
             <p
               className={`figures mt-1.5 text-[19px] ${
@@ -81,7 +81,7 @@ export function DwaarPanel({
             <p className="mt-1 text-[11px] text-paper-faint">never what gets charged</p>
           </div>
 
-          <div className="bg-ink-raised px-3 py-3">
+          <div className="bg-ink px-3 py-3">
             <span className="eyebrow">The gate charged</span>
             <p
               className={`display-figure mt-1.5 text-[19px] ${denied ? "text-paper-faint" : "text-brass"}`}
@@ -127,7 +127,7 @@ export function DwaarPanel({
           </p>
         ) : (
           <table className="w-full border-collapse text-[12px]">
-            <thead className="sticky top-0 bg-ink-raised">
+            <thead className="sticky top-0 bg-ink">
               <tr className="border-b border-rule">
                 <th className="eyebrow px-4 py-2 text-left font-normal">Rule</th>
                 <th className="eyebrow px-2 py-2 text-right font-normal">Observed</th>

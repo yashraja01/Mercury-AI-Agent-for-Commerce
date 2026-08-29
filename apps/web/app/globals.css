@@ -70,19 +70,25 @@ body {
 }
 
 /* A panel: sunk into the board, ruled, with a brass hairline at the head. */
+/*
+ * A panel: outlined, not raised.
+ *
+ * Mission Control needs panels at all because it is a four-region grid and the
+ * regions would otherwise run together; the merchant console is one column with
+ * whitespace and needs none. But the *border* is what does that work. The
+ * raised fill and the brass wash on the head were decoration, and they were the
+ * whole reason the two screens read as different products rather than two seats
+ * at one. Both screens now sit on the same ground, and colour is left to mean
+ * something.
+ */
 .panel {
-  background: var(--color-ink-raised);
+  background: transparent;
   border: 1px solid var(--color-rule);
   border-radius: 2px;
 }
 
 .panel-head {
   border-bottom: 1px solid var(--color-rule);
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--color-brass) 7%, transparent),
-    transparent
-  );
 }
 
 /*
