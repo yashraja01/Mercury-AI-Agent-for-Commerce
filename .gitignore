@@ -12,3 +12,6 @@ coverage/
 
 # Demo buyer agent keys, written by `npm run seed`.
 buyer-wallet.json
+
+# Local demo script, not part of the repo.
+SCRIPT.md
