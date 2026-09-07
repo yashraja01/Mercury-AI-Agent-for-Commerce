@@ -110,21 +110,6 @@ npm run dev
 
 Open http://localhost:3000. This one command starts everything: Mission Control, the merchant console, and the buyer facing API.
 
-## Other commands worth knowing
-
-| Command | What it does |
-|---|---|
-| `npm run demo` | Runs the whole negotiation flow in the terminal, no browser and no API key needed |
-| `npm run chaos` | Deliberately breaks things (bad signatures, dropped connections, etc.) and checks the system handles each case correctly |
-| `npm run verify` | Independently re-walks the entire audit log to confirm it hasn't been altered |
-| `npm test` | Runs the full test suite, 232 tests, no API key or internet needed |
-| `npm run conformance` | Checks that public data, like the product feed, doesn't accidentally expose private info such as cost or margins |
-| `npm run build` | Builds the project for production |
-
-## A note on safety
-
-This only ever runs against Razorpay's test mode. No real payments happen. Don't use production keys with this project. Your `.env` file is already excluded from git through `.gitignore`, so keep any real keys there and never commit them.
-
 ## Project structure
 
 ```
