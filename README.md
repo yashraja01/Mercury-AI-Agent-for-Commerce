@@ -1,6 +1,6 @@
 # Mercury - an AI Agent for Commerce
 
-Built for the Razorpay Buildathon Challenge 2026.
+Built for the Razorpay Buildathon.
 
 Mercury is a demo of two AI agents doing business with each other: one representing a buyer, one representing a merchant. They negotiate a purchase, but neither of them is allowed to actually move money. A separate, simple rule-checker sits in between and decides whether a payment is allowed to go through. Every decision, approved or denied, gets written to a log that can't be quietly edited later.
 
@@ -41,7 +41,23 @@ There are two screens.
 
 **Mission Control** (the homepage) lets you watch the negotiation happen step by step: the buyer's and merchant's offers, what Dwaar approved or denied and why, and the audit log building and verifying in real time. There's also a section for deliberately breaking things (bad signatures, dropped connections, etc.) to check that the system catches and logs every failure correctly.
 
+![Mission Control overview, showing the negotiation panel, the gate, and the audit log](./screenshots/mission-control-overview.png)
+
+You pick a situation on the left and run it. Here's a normal weekly grocery top-up going through:
+
+![List of situations you can run, including a normal purchase and a few edge cases](./screenshots/negotiation-situations.png)
+
+Once it runs, you can see the buyer's request, the offer the agent put together, and Dwaar's decision on it, followed by the actual payment capture:
+
+![The full negotiation turn by turn, ending in a captured payment](./screenshots/negotiation-captured.png)
+
 **Merchant Console** shows the seller's side: how much extra the agent earned compared to a flat price list, what the agent is and isn't allowed to do (with editable settings), and recent orders.
+
+![Merchant console showing earnings, the buyer's ask versus what the gate approved, and the uplift](./screenshots/merchant-earnings.png)
+
+Further down, the merchant can adjust exactly what the agent is allowed to do, discounts, order size limits, which categories it can sell, and which negotiation tactics are turned on:
+
+![Merchant settings for pricing limits, inventory rules, and negotiation tactics](./screenshots/merchant-settings.png)
 
 ## Tech stack
 
@@ -109,6 +125,21 @@ npm run dev
 ```
 
 Open http://localhost:3000. This one command starts everything: Mission Control, the merchant console, and the buyer facing API.
+
+## Other commands worth knowing
+
+| Command | What it does |
+|---|---|
+| `npm run demo` | Runs the whole negotiation flow in the terminal, no browser and no API key needed |
+| `npm run chaos` | Deliberately breaks things (bad signatures, dropped connections, etc.) and checks the system handles each case correctly |
+| `npm run verify` | Independently re-walks the entire audit log to confirm it hasn't been altered |
+| `npm test` | Runs the full test suite, 232 tests, no API key or internet needed |
+| `npm run conformance` | Checks that public data, like the product feed, doesn't accidentally expose private info such as cost or margins |
+| `npm run build` | Builds the project for production |
+
+## A note on safety
+
+This only ever runs against Razorpay's test mode. No real payments happen. Don't use production keys with this project. Your `.env` file is already excluded from git through `.gitignore`, so keep any real keys there and never commit them.
 
 ## Project structure
 
